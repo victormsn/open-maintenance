@@ -29,7 +29,10 @@ db.serialize(() => {
   `);
 
   // Insertar tareas del día actual SIEMPRE
-  const today = new Date().toISOString().split('T')[0];
+const now = new Date();
+const offset = -6 * 60; // UTC-6 para México
+const today = new Date(now.getTime() + offset * 60000).toISOString().split('T')[0];
+console.log('Fecha México:', today);
   
   // Verificar si ya existen tareas para hoy
  db.get(`SELECT COUNT(*) as count FROM tasks WHERE date = ?`, [today], (err, row) => {
