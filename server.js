@@ -38,36 +38,117 @@ db.serialize(() => {
       return;
     }
     
-    if (row.count === 0) {
-      console.log(`Insertando tareas para ${today}...`);
-      
-      const tasks = [
-        {
-          id: '1', date: today, area: 'Sótano', 
-          system: 'Bombas', activity: 'Revisar ruido y presión',
-          frequency: 'daily', status: 'pending', user: 'Técnico'
-        },
-        {
-          id: '2', date: today, area: 'Ascensores', 
-          system: 'Ascensor A', activity: 'Prueba básica de funcionamiento',
-          frequency: 'daily', status: 'pending', user: 'Técnico'
-        },
-        {
-          id: '3', date: today, area: 'Áreas Comunes', 
-          system: 'Luces', activity: 'Revisar funcionamiento de todas las luces',
-          frequency: 'daily', status: 'pending', user: 'Técnico'
-        },
-        {
-          id: '4', date: today, area: 'Jardineras', 
-          system: 'Riego', activity: 'Verificar encharcamientos',
-          frequency: 'daily', status: 'pending', user: 'Técnico'
-        },
-        {
-          id: '5', date: today, area: 'Sistema Eléctrico', 
-          system: 'Tablero Principal', activity: 'Revisar indicadores',
-          frequency: 'daily', status: 'pending', user: 'Técnico'
-        }
-      ];
+    db.get(`SELECT COUNT(*) as count FROM tasks WHERE date = ?`, [today], (err, row) => {
+  if (err) {
+    console.error('Error verificando tareas:', err);
+    return;
+  }
+  
+  if (row.count === 0) {
+    console.log(`Insertando tareas REALES para ${today}...`);
+    
+    const dayOfWeek = new Date().getDay(); // 0=Domingo, 1=Lunes...
+    const dayOfMonth = new Date().getDate(); // 1-31
+    
+    // Tareas DIARIAS (siempre)
+    const dailyTasks = [
+      {
+        id: `agua-${today}`,
+        date: today,
+        area: 'Sistema Hidráulico',
+        system: 'Cisterna y Tinacos',
+        activity: 'Revisar niveles de agua (FL-16)',
+        frequency: 'daily',
+        status: 'pending',
+        user: 'Técnico'
+      },
+      {
+        id: `agua-medidores-${today}`,
+        date: today,
+        area: 'Sanitarios',
+        system: 'Medidores',
+        activity: 'Lectura de medidores y detección de fugas (WC, llaves)',
+        frequency: 'daily',
+        status: 'pending',
+        user: 'Técnico'
+      },
+      {
+        id: `solar-${today}`,
+        date: today,
+        area: 'Azotea',
+        system: 'Paneles Solares',
+        activity: 'Revisar generación solar y balance con CFE (Shelly)',
+        frequency: 'daily',
+        status: 'pending',
+        user: 'Técnico'
+      },
+      {
+        id: `iluminacion-${today}`,
+        date: today,
+        area: 'Edificio',
+        system: 'Iluminación',
+        activity: 'Atención a inquilinos y cambio de luminarias',
+        frequency: 'daily',
+        status: 'pending',
+        user: 'Técnico'
+      }
+    ];
+
+    // Tareas SEMANALES (solo lunes)
+    const weeklyTasks = dayOfWeek === 1 ? [
+      {
+        id: `rampa-${today}`,
+        date: today,
+        area: 'Estacionamiento',
+        system: 'Rampa Hidráulica',
+        activity: 'Inspección visual, aceite y consumo en amperes',
+        frequency: 'weekly',
+        status: 'pending',
+        user: 'Técnico'
+      }
+    ] : [];
+
+    // Tareas MENSUALES (solo día 1)
+    const monthlyTasks = dayOfMonth === 1 ? [
+      {
+        id: `azotea-${today}`,
+        date: today,
+        area: 'Azotea',
+        system: 'Impermeabilización / Limpieza',
+        activity: 'Limpieza de azotea y revisión general',
+        frequency: 'monthly',
+        status: 'pending',
+        user: 'Técnico'
+      }
+    ] : [];
+
+    // Combinar todas
+    const tasks = [...dailyTasks, ...weeklyTasks, ...monthlyTasks];
+    
+    // EL RESTO DEL CÓDIGO SE MANTIENE IGUAL
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO tasks 
+      (id, date, area, system, activity, frequency, status, user) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    tasks.forEach(task => {
+      stmt.run(
+        task.id, task.date, task.area, task.system, 
+        task.activity, task.frequency, task.status, task.user
+      );
+      console.log(`✓ Tarea real agregada: ${task.system} - ${task.area}`);
+    });
+    
+    stmt.finalize();
+    console.log(`✅ ${tasks.length} tareas REALES insertadas para ${today}`);
+    console.log(`   Diarias: ${dailyTasks.length}`);
+    if (weeklyTasks.length > 0) console.log(`   Semanales: ${weeklyTasks.length}`);
+    if (monthlyTasks.length > 0) console.log(`   Mensuales: ${monthlyTasks.length}`);
+  } else {
+    console.log(`✅ Ya existen ${row.count} tareas REALES para ${today}`);
+  }
+});
 
       const stmt = db.prepare(`
         INSERT OR REPLACE INTO tasks 
