@@ -32,13 +32,7 @@ db.serialize(() => {
   const today = new Date().toISOString().split('T')[0];
   
   // Verificar si ya existen tareas para hoy
-  db.get(`SELECT COUNT(*) as count FROM tasks WHERE date = ?`, [today], (err, row) => {
-    if (err) {
-      console.error('Error verificando tareas:', err);
-      return;
-    }
-    
-    db.get(`SELECT COUNT(*) as count FROM tasks WHERE date = ?`, [today], (err, row) => {
+ db.get(`SELECT COUNT(*) as count FROM tasks WHERE date = ?`, [today], (err, row) => {
   if (err) {
     console.error('Error verificando tareas:', err);
     return;
@@ -121,6 +115,34 @@ db.serialize(() => {
         user: 'Técnico'
       }
     ] : [];
+
+    // Combinar todas
+    const tasks = [...dailyTasks, ...weeklyTasks, ...monthlyTasks];
+    
+    // EL RESTO DEL CÓDIGO SE MANTIENE IGUAL
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO tasks 
+      (id, date, area, system, activity, frequency, status, user) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    tasks.forEach(task => {
+      stmt.run(
+        task.id, task.date, task.area, task.system, 
+        task.activity, task.frequency, task.status, task.user
+      );
+      console.log(`✓ Tarea real agregada: ${task.system} - ${task.area}`);
+    });
+    
+    stmt.finalize();
+    console.log(`✅ ${tasks.length} tareas REALES insertadas para ${today}`);
+    console.log(`   Diarias: ${dailyTasks.length}`);
+    if (weeklyTasks.length > 0) console.log(`   Semanales: ${weeklyTasks.length}`);
+    if (monthlyTasks.length > 0) console.log(`   Mensuales: ${monthlyTasks.length}`);
+  } else {
+    console.log(`✅ Ya existen ${row.count} tareas REALES para ${today}`);
+  }
+});
 
     // Combinar todas
     const tasks = [...dailyTasks, ...weeklyTasks, ...monthlyTasks];
