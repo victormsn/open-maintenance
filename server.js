@@ -558,4 +558,429 @@ app.get('/tecnico', (req, res) => {
         async function descargarExcel() {
           const hoy = new Date().toISOString().split('T')[0];
           window.open(API_URL + '/api/descargar/' + hoy, '_blank');
+        }
+        
+        // Auto-refresh cada 2 minutos
+        setInterval(cargarActividades, 120000);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// DASHBOARD GERENCIA (CON SEMAFORIZACIÓN)
+app.get('/gerencia', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Dashboard Gerencia - Torre K</title>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fa; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        
+        .header { 
+          background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
+          color: white; 
+          padding: 30px; 
+          border-radius: 10px; 
+          margin-bottom: 30px;
+          box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .semaforo-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 20px;
+          margin-bottom: 30px;
+        }
+        
+        .semaforo-card {
+          background: white;
+          padding: 25px;
+          border-radius: 10px;
+          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+          text-align: center;
+          transition: transform 0.3s;
+          border-top: 5px solid;
+        }
+        
+        .semaforo-card:hover { transform: translateY(-5px); }
+        .semaforo-card.verde { border-color: #27ae60; }
+        .semaforo-card.amarillo { border-color: #f39c12; }
+        .semaforo-card.rojo { border-color: #e74c3c; }
+        
+        .status-icon {
+          font-size: 3em;
+          margin-bottom: 15px;
+        }
+        
+        .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 20px;
+          margin: 30px 0;
+        }
+        
+        .stat-card {
+          background: white;
+          padding: 20px;
+          border-radius: 10px;
+          text-align: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .stat-value {
+          font-size: 2.5em;
+          font-weight: bold;
+          margin: 10px 0;
+        }
+        
+        .actividades-recientes {
+          background: white;
+          padding: 25px;
+          border-radius: 10px;
+          margin-top: 30px;
+          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+        }
+        
+        .btn {
+          background: #2980b9;
+          color: white;
+          border: none;
+          padding: 12px 25px;
+          border-radius: 8px;
+          font-size: 16px;
+          cursor: pointer;
+          margin: 10px 5px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+        
+        .btn:hover { background: #1c6ea4; }
+        .btn-descargar { background: #27ae60; }
+        .btn-descargar:hover { background: #219653; }
+        
+        .badge {
+          display: inline-block;
+          padding: 4px 12px;
+          border-radius: 20px;
+          font-size: 0.85em;
+          font-weight: 600;
+          margin-left: 10px;
+        }
+        
+        .badge-verde { background: #d5f4e6; color: #27ae60; }
+        .badge-amarillo { background: #fff3cd; color: #856404; }
+        .badge-rojo { background: #f8d7da; color: #721c24; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <!-- HEADER -->
+        <div class="header">
+          <h1>🏢 Dashboard Gerencia - Torre K</h1>
+          <p>Estado de sistemas en tiempo real • ${new Date().toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          <div style="margin-top: 20px;">
+            <button onclick="cargarDashboard()" class="btn">🔄 Actualizar</button>
+            <button onclick="descargarReporte()" class="btn btn-descargar">📥 Descargar Reporte</button>
+            <button onclick="window.open('/tecnico', '_blank')" class="btn">👷 Ver Bitácora</button>
+          </div>
+        </div>
+        
+        <!-- SEMÁFORO DE EQUIPOS CRÍTICOS -->
+        <h2 style="color: #2c3e50; margin-bottom: 20px;">🚦 Semáforo de Equipos Críticos</h2>
+        <div class="semaforo-grid" id="semaforoGrid">
+          <p>Cargando equipos...</p>
+        </div>
+        
+        <!-- ESTADÍSTICAS -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div>📋 Actividades Hoy</div>
+            <div class="stat-value" id="totalActividades">0</div>
+            <div>registros</div>
+          </div>
+          
+          <div class="stat-card">
+            <div>💧 Agua Consumida</div>
+            <div class="stat-value" id="totalAgua">0</div>
+            <div>litros</div>
+          </div>
+          
+          <div class="stat-card">
+            <div>⚡ Energía Consumida</div>
+            <div class="stat-value" id="totalEnergia">0</div>
+            <div>kWh</div>
+          </div>
+          
+          <div class="stat-card">
+            <div>🔧 Equipos Operativos</div>
+            <div class="stat-value" id="equiposVerdes">0</div>
+            <div>de <span id="totalEquipos">0</span></div>
+          </div>
+        </div>
+        
+        <!-- ACTIVIDADES RECIENTES -->
+        <div class="actividades-recientes">
+          <h2 style="color: #2c3e50; margin-bottom: 20px;">📝 Actividades Recientes</h2>
+          <div id="actividadesRecientes">
+            <p>Cargando actividades...</p>
+          </div>
+        </div>
+      </div>
+      
+      <script>
+        const API_URL = window.location.origin;
+        
+        // Cargar dashboard
+        cargarDashboard();
+        
+        async function cargarDashboard() {
+          try {
+            const response = await fetch(API_URL + '/api/dashboard/gerencia');
+            const data = await response.json();
+            
+            // Actualizar semáforo
+            const semaforoGrid = document.getElementById('semaforoGrid');
+            semaforoGrid.innerHTML = data.equipos_criticos.map(eq => \`
+              <div class="semaforo-card \${eq.estado}">
+                <div class="status-icon">
+                  \${eq.estado === 'verde' ? '🟢' : eq.estado === 'amarillo' ? '🟡' : '🔴'}
+                </div>
+                <h3>\${eq.nombre}</h3>
+                <p>\${eq.ubicacion}</p>
+                <div style="margin: 15px 0;">
+                  <span class="badge badge-\${eq.estado}">
+                    \${eq.estado === 'verde' ? 'OPERATIVO' : eq.estado === 'amarillo' ? 'ATENCIÓN' : 'CRÍTICO'}
+                  </span>
+                </div>
+                <p style="font-size: 0.9em; color: #666; margin-top: 10px;">
+                  Última revisión: \${eq.ultima_revision || 'N/A'}
+                </p>
+                <button onclick="cambiarEstado('\${eq.nombre}')" class="btn" style="margin-top: 10px;">
+                  Cambiar Estado
+                </button>
+              </div>
+            \`).join('');
+            
+            // Actualizar estadísticas
+            document.getElementById('totalActividades').textContent = data.resumen_hoy.total || 0;
+            document.getElementById('totalAgua').textContent = data.resumen_hoy.agua_total || 0;
+            document.getElementById('totalEnergia').textContent = data.resumen_hoy.energia_total || 0;
+            document.getElementById('equiposVerdes').textContent = data.semaforo.verdes;
+            document.getElementById('totalEquipos').textContent = data.equipos_criticos.length;
+            
+            // Actualizar actividades recientes
+            const actividadesDiv = document.getElementById('actividadesRecientes');
+            actividadesDiv.innerHTML = data.ultimas_actividades.map(a => \`
+              <div style="padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between;">
+                <div>
+                  <div>
+                    <strong>\${a.actividad}</strong>
+                    \${a.equipo_critico ? '<span class="badge" style="background: #fff3cd;">' + a.equipo_critico + '</span>' : ''}
+                  </div>
+                  <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
+                    📍 \${a.ubicacion} • \${a.hora} • \${a.fecha}
+                  </div>
+                </div>
+                <div style="color: #999; font-size: 0.9em;">
+                  \${a.tipo_actividad}
+                </div>
+              </div>
+            \`).join('');
+            
+          } catch (error) {
+            console.error('Error cargando dashboard:', error);
+            alert('Error cargando datos del dashboard');
+          }
+        }
+        
+        function cambiarEstado(nombreEquipo) {
+          const nuevoEstado = prompt('Cambiar estado de ' + nombreEquipo + '\\n(verde, amarillo, rojo):');
+          
+          if (nuevoEstado && ['verde', 'amarillo', 'rojo'].includes(nuevoEstado.toLowerCase())) {
+            const observaciones = prompt('Observaciones (opcional):');
+            
+            fetch(API_URL + '/api/equipo/' + encodeURIComponent(nombreEquipo) + '/estado', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                estado: nuevoEstado.toLowerCase(),
+                observaciones: observaciones || ''
+              })
+            })
+            .then(res => res.json())
+            .then(data => {
+              if (data.success) {
+                alert('✅ Estado actualizado');
+                cargarDashboard();
+              }
+            })
+            .catch(err => {
+              alert('❌ Error actualizando estado');
+            });
+          }
+        }
+        
+        function descargarReporte() {
+          const hoy = new Date().toISOString().split('T')[0];
+          window.open(API_URL + '/api/descargar/' + hoy, '_blank');
+        }
+        
+        // Auto-refresh cada 3 minutos
+        setInterval(cargarDashboard, 180000);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// PÁGINA PRINCIPAL
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Sistema de Mantenimiento - Torre K</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body { 
+          font-family: 'Segoe UI', system-ui, sans-serif; 
+          margin: 0; 
+          padding: 0; 
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        
+        .container {
+          background: white;
+          border-radius: 20px;
+          padding: 40px;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+          text-align: center;
+          max-width: 500px;
+          width: 90%;
+        }
+        
+        h1 { 
+          color: #2c3e50; 
+          margin-bottom: 10px;
+          font-size: 2.5em;
+        }
+        
+        .subtitle {
+          color: #7f8c8d;
+          margin-bottom: 30px;
+          font-size: 1.1em;
+        }
+        
+        .card {
+          background: #f8f9fa;
+          border-radius: 15px;
+          padding: 30px;
+          margin: 20px 0;
+          transition: transform 0.3s, box-shadow 0.3s;
+          cursor: pointer;
+          border: 2px solid transparent;
+        }
+        
+        .card:hover {
+          transform: translateY(-5px);
+          box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+          border-color: #3498db;
+        }
+        
+        .card.tecnico { border-left: 5px solid #27ae60; }
+        .card.gerencia { border-left: 5px solid #2980b9; }
+        
+        .btn {
+          display: inline-block;
+          background: #3498db;
+          color: white;
+          text-decoration: none;
+          padding: 15px 30px;
+          border-radius: 10px;
+          font-weight: bold;
+          margin-top: 20px;
+          transition: background 0.3s;
+        }
+        
+        .btn:hover { background: #2980b9; }
+        .btn-tecnico { background: #27ae60; }
+        .btn-tecnico:hover { background: #219653; }
+        .btn-gerencia { background: #9b59b6; }
+        .btn-gerencia:hover { background: #8e44ad; }
+        
+        .rule {
+          margin: 30px 0;
+          padding: 15px;
+          background: #fff3cd;
+          border-radius: 10px;
+          border-left: 4px solid #f39c12;
+          font-style: italic;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🏢 Torre K Maintenance</h1>
+        <div class="subtitle">
+          Sistema abierto de mantenimiento • ${new Date().toLocaleDateString('es-MX')}
+        </div>
+        
+        <div class="rule">
+          <strong>📋 Regla fundamental:</strong><br>
+          "Sin registro, no se hizo"
+        </div>
+        
+        <div class="card tecnico" onclick="window.location.href='/tecnico'">
+          <h2>👷 Para Técnicos</h2>
+          <p>Registro rápido de actividades diarias</p>
+          <p style="font-size: 0.9em; color: #666;">
+            • Agregar actividades en segundos<br>
+            • Registrar consumo de agua/energía<br>
+            • Seguimiento de equipos críticos
+          </p>
+          <a href="/tecnico" class="btn btn-tecnico">Abrir Bitácora →</a>
+        </div>
+        
+        <div class="card gerencia" onclick="window.location.href='/gerencia'">
+          <h2>👔 Para Gerencia</h2>
+          <p>Dashboard con semáforo de estado</p>
+          <p style="font-size: 0.9em; color: #666;">
+            • Ver estado de equipos (verde/amarillo/rojo)<br>
+            • Revisar actividades recientes<br>
+            • Descargar reportes en Excel
+          </p>
+          <a href="/gerencia" class="btn btn-gerencia">Abrir Dashboard →</a>
+        </div>
+        
+        <div style="margin-top: 30px; color: #7f8c8d; font-size: 0.9em;">
+          <p>OpenMaintenance Torre K • Sin burocracia, sin excusas</p>
+          <p>Backend: <a href="${process.env.RENDER_EXTERNAL_URL || 'https://open-maintenance.onrender.com'}" target="_blank">${process.env.RENDER_EXTERNAL_URL || 'https://open-maintenance.onrender.com'}</a></p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n=========================================`);
+  console.log(`🚀 Sistema de Mantenimiento Torre K`);
+  console.log(`📅 ${new Date().toLocaleString('es-MX')}`);
+  console.log(`🌐 URL Principal: http://localhost:${PORT}`);
+  console.log(`👷 Técnico: http://localhost:${PORT}/tecnico`);
+  console.log(`👔 Gerencia: http://localhost:${PORT}/gerencia`);
+  console.log(`=========================================\n`);
+});
    
