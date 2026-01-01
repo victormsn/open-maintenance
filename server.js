@@ -163,9 +163,9 @@ app.get('/api/actividades/hoy', (req, res) => {
   );
 });
 
-// 3. DASHBOARD GERENCIA (solo lectura)
+// 3. DASHBOARD GERENCIA (MODIFICADO - SIN CATEGORÍAS)
 app.get('/api/dashboard/gerencia', (req, res) => {
-  // Obtener sistemas por categoría
+  // Obtener sistemas (SIN ORDENAR POR CATEGORÍA)
   db.all(
     `SELECT *, 
             CASE 
@@ -180,54 +180,32 @@ app.get('/api/dashboard/gerencia', (req, res) => {
          WHEN 'amarillo' THEN 2
          ELSE 3
        END,
-       prioridad,
-       categoria,
        nombre`,
     [],
     (err, sistemas) => {
       if (err) return res.status(500).json({ error: err.message });
 
-      // Obtener resumen por categoría
+      // Obtener últimas actividades con cambios de estado
       db.all(
-        `SELECT 
-           categoria,
-           COUNT(*) as total,
-           SUM(CASE WHEN estado = 'verde' THEN 1 ELSE 0 END) as verdes,
-           SUM(CASE WHEN estado = 'amarillo' THEN 1 ELSE 0 END) as amarillos,
-           SUM(CASE WHEN estado = 'rojo' THEN 1 ELSE 0 END) as rojos
-         FROM sistemas_criticos 
-         GROUP BY categoria
-         ORDER BY 
-           SUM(CASE WHEN estado = 'rojo' THEN 1 ELSE 0 END) DESC,
-           SUM(CASE WHEN estado = 'amarillo' THEN 1 ELSE 0 END) DESC`,
+        `SELECT * FROM actividades 
+         WHERE equipo_critico != '' OR nuevo_estado != ''
+         ORDER BY created_at DESC 
+         LIMIT 15`,
         [],
-        (err, categorias) => {
+        (err, cambios) => {
           if (err) return res.status(500).json({ error: err.message });
 
-          // Obtener últimas actividades con cambios de estado
-          db.all(
-            `SELECT * FROM actividades 
-             WHERE equipo_critico != '' OR nuevo_estado != ''
-             ORDER BY created_at DESC 
-             LIMIT 10`,
-            [],
-            (err, cambios) => {
-              if (err) return res.status(500).json({ error: err.message });
-
-              res.json({
-                fecha: new Date().toISOString().split('T')[0],
-                sistemas_criticos: sistemas,
-                resumen_categorias: categorias,
-                cambios_recientes: cambios,
-                semaforo_total: {
-                  total: sistemas.length,
-                  verdes: sistemas.filter(s => s.estado === 'verde').length,
-                  amarillos: sistemas.filter(s => s.estado === 'amarillo').length,
-                  rojos: sistemas.filter(s => s.estado === 'rojo').length
-                }
-              });
+          res.json({
+            fecha: new Date().toISOString().split('T')[0],
+            sistemas_criticos: sistemas,
+            cambios_recientes: cambios,
+            semaforo_total: {
+              total: sistemas.length,
+              verdes: sistemas.filter(s => s.estado === 'verde').length,
+              amarillos: sistemas.filter(s => s.estado === 'amarillo').length,
+              rojos: sistemas.filter(s => s.estado === 'rojo').length
             }
-          );
+          });
         }
       );
     }
@@ -704,7 +682,7 @@ app.get('/tecnico', (req, res) => {
   `);
 });
 
-// DASHBOARD GERENCIA (SOLO LECTURA)
+// ==================== DASHBOARD GERENCIA SIMPLIFICADO (SIN CATEGORÍAS) ====================
 app.get('/gerencia', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -746,20 +724,6 @@ app.get('/gerencia', (req, res) => {
           font-size: 2.5em;
           font-weight: bold;
           margin: 10px 0;
-        }
-        
-        .categorias-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-          gap: 20px;
-          margin-bottom: 30px;
-        }
-        
-        .categoria-card {
-          background: white;
-          padding: 25px;
-          border-radius: 10px;
-          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
         }
         
         .sistemas-grid {
@@ -820,6 +784,11 @@ app.get('/gerencia', (req, res) => {
           margin-top: 30px;
           box-shadow: 0 3px 10px rgba(0,0,0,0.08);
         }
+        
+        /* Quitamos las categorías */
+        .categorias-grid {
+          display: none;
+        }
       </style>
     </head>
     <body>
@@ -835,7 +804,7 @@ app.get('/gerencia', (req, res) => {
           </div>
         </div>
         
-        <!-- ESTADÍSTICAS GENERALES -->
+        <!-- ESTADÍSTICAS GENERALES (MANTENER) -->
         <h2 style="color: #2c3e50; margin-bottom: 15px;">📊 Resumen General</h2>
         <div class="stats-overview">
           <div class="stat-card">
@@ -863,17 +832,13 @@ app.get('/gerencia', (req, res) => {
           </div>
         </div>
         
-        <!-- SISTEMAS POR CATEGORÍA -->
-        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">📂 Sistemas por Categoría</h2>
-        <div class="categorias-grid" id="categoriasGrid"></div>
-        
-        <!-- TODOS LOS SISTEMAS CRÍTICOS -->
-        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">🚦 Semáforo de Todos los Sistemas</h2>
+        <!-- TODOS LOS SISTEMAS CRÍTICOS (MANTENER) -->
+        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">🚦 Estado de Todos los Sistemas</h2>
         <div class="sistemas-grid" id="sistemasGrid">
           <p>Cargando sistemas...</p>
         </div>
         
-        <!-- CAMBIOS RECIENTES -->
+        <!-- CAMBIOS RECIENTES (MANTENER) -->
         <div class="cambios-recientes">
           <h2 style="color: #2c3e50; margin-bottom: 20px;">📝 Cambios Recientes de Estado</h2>
           <div id="cambiosRecientes">
@@ -899,52 +864,39 @@ app.get('/gerencia', (req, res) => {
             document.getElementById('totalRojos').textContent = data.semaforo_total.rojos;
             document.getElementById('totalSistemas').textContent = data.semaforo_total.total;
             
-            // Mostrar categorías
-            const categoriasGrid = document.getElementById('categoriasGrid');
-            categoriasGrid.innerHTML = data.resumen_categorias.map(cat => \`
-              <div class="categoria-card">
-                <h3>\${cat.categoria.toUpperCase()}</h3>
-                <div style="margin: 15px 0;">
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🟢 Operativos:</span>
-                    <strong>\${cat.verdes || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🟡 Atención:</span>
-                    <strong>\${cat.amarillos || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🔴 Críticos:</span>
-                    <strong>\${cat.rojos || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0; border-top: 1px solid #eee; padding-top: 8px;">
-                    <span>📊 Total:</span>
-                    <strong>\${cat.total || 0}</strong>
-                  </div>
-                </div>
-              </div>
-            \`).join('');
-            
-            // Mostrar todos los sistemas
+            // Mostrar todos los sistemas (SIN CATEGORÍAS)
             const sistemasGrid = document.getElementById('sistemasGrid');
-            sistemasGrid.innerHTML = data.sistemas_criticos.map(s => \`
-              <div class="sistema-card \${s.estado}">
-                <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">
-                  \${s.categoria}
+            sistemasGrid.innerHTML = data.sistemas_criticos.map(s => {
+              // Determinar icono según estado
+              let icono = '🟢';
+              let texto = 'OPERATIVO';
+              if (s.estado === 'amarillo') {
+                icono = '🟡';
+                texto = 'ATENCIÓN';
+              } else if (s.estado === 'rojo') {
+                icono = '🔴';
+                texto = 'CRÍTICO';
+              }
+              
+              return \`
+                <div class="sistema-card \${s.estado}">
+                  <div style="font-size: 2em; margin-bottom: 10px;">
+                    \${icono}
+                  </div>
+                  <h3 style="margin: 0 0 10px 0;">\${s.nombre}</h3>
+                  <p style="color: #666; margin: 5px 0; font-size: 0.9em;">
+                    📍 \${s.ubicacion}
+                  </p>
+                  <div class="estado-badge badge-\${s.estado}">
+                    <strong>\${texto}</strong>
+                  </div>
+                  <p style="font-size: 0.85em; color: #999; margin-top: 10px;">
+                    Último cambio:<br>
+                    \${s.ultima_actividad || 'Sin registro'}
+                  </p>
                 </div>
-                <h3 style="margin: 0 0 10px 0;">\${s.nombre}</h3>
-                <p style="color: #666; margin: 5px 0; font-size: 0.9em;">
-                  📍 \${s.ubicacion}
-                </p>
-                <div class="estado-badge badge-\${s.estado}">
-                  \${s.estado_texto}
-                </div>
-                <p style="font-size: 0.85em; color: #999; margin-top: 10px;">
-                  Última actividad:<br>
-                  \${s.ultima_actividad || 'Sin registro'}
-                </p>
-              </div>
-            \`).join('');
+              \`;
+            }).join('');
             
             // Mostrar cambios recientes
             const cambiosDiv = document.getElementById('cambiosRecientes');
@@ -962,20 +914,18 @@ app.get('/gerencia', (req, res) => {
                 }
                 
                 return \`
-                  <div style="padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between;">
-                    <div style="flex: 1;">
-                      <div>
-                        <strong>\${c.actividad}</strong>
-                        \${c.equipo_critico ? '<span style="background: #e9ecef; padding: 3px 8px; border-radius: 12px; font-size: 0.85em; margin-left: 10px;">' + c.equipo_critico + '</span>' : ''}
-                        \${estadoBadge}
-                      </div>
-                      <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
-                        📍 \${c.ubicacion} • \${c.hora} • \${c.fecha}
-                      </div>
-                      \${c.observaciones ? '<div style="color: #666; font-size: 0.9em; margin-top: 5px; font-style: italic;">' + c.observaciones + '</div>' : ''}
+                  <div style="padding: 15px; border-bottom: 1px solid #eee;">
+                    <div>
+                      <strong>\${c.actividad}</strong>
+                      \${c.equipo_critico ? '<span style="background: #e9ecef; padding: 3px 8px; border-radius: 12px; font-size: 0.85em; margin-left: 10px;">' + c.equipo_critico + '</span>' : ''}
+                      \${estadoBadge}
                     </div>
-                    <div style="color: #999; font-size: 0.9em; min-width: 100px; text-align: right;">
-                      \${c.tecnico}
+                    <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
+                      📍 \${c.ubicacion} • ⏰ \${c.hora} • 📅 \${c.fecha}
+                    </div>
+                    \${c.observaciones ? '<div style="color: #666; font-size: 0.9em; margin-top: 5px; font-style: italic;">' + c.observaciones + '</div>' : ''}
+                    <div style="color: #999; font-size: 0.9em; margin-top: 5px; text-align: right;">
+                      👷 \${c.tecnico}
                     </div>
                   </div>
                 \`;
@@ -984,7 +934,6 @@ app.get('/gerencia', (req, res) => {
             
           } catch (error) {
             console.error('Error cargando dashboard:', error);
-            alert('Error cargando datos del dashboard');
           }
         }
         
@@ -992,15 +941,15 @@ app.get('/gerencia', (req, res) => {
           window.open(API_URL + '/api/descargar/reporte', '_blank');
         }
         
-        // Auto-refresh cada 3 minutos
-        setInterval(cargarDashboard, 180000);
+        // Auto-refresh cada 2 minutos
+        setInterval(cargarDashboard, 120000);
       </script>
     </body>
     </html>
   `);
 });
 
-// PÁGINA PRINCIPAL
+// ==================== PÁGINA PRINCIPAL ====================
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -1161,5 +1110,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 URL Principal: http://localhost:${PORT}`);
   console.log(`👷 Técnico (cambia estados): http://localhost:${PORT}/tecnico`);
   console.log(`👔 Gerencia (solo lectura): http://localhost:${PORT}/gerencia`);
+  console.log(`✅ Dashboard GERENCIA simplificado (sin categorías)`);
+  console.log(`✅ Técnico mantiene selector de estado`);
   console.log(`=========================================\n`);
 });
