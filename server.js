@@ -9,25 +9,26 @@ app.use(express.json());
 // Base de datos SQLite
 const db = new sqlite3.Database('/tmp/database.sqlite');
 
-// ==================== CREAR TABLAS (SOLO CAMBIO DE NOMBRES) ====================
+// ==================== CREAR TABLAS ====================
 db.serialize(() => {
-  // Tabla principal (solo cambio de nombres de campos)
+  // Tabla principal (CON HORA EN TABLA PERO NO EN FORMULARIO)
   db.run(`
     CREATE TABLE IF NOT EXISTS actividades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      fecha TEXT NOT NULL,        -- YYYY-MM-DD
+      fecha TEXT NOT NULL,
+      hora TEXT,  -- Mantenemos el campo pero será automático
       ubicacion TEXT NOT NULL,
       actividad TEXT NOT NULL,
       tipo_actividad TEXT,
       
-      -- CONSUMOS (MANTENEMOS PANELES, SOLO CAMBIO DE NOMBRES)
-      agua_m3 REAL,               -- metros cúbicos de agua
-      energia_consumida REAL,     -- Energy Consumed (+) (antes CFE)
-      paneles_kwh REAL,           -- Energy Returned (-) (antes Paneles)
+      -- CONSUMOS
+      agua_m3 REAL,
+      energia_consumida REAL,    -- Energy Consumed (+)
+      paneles_kwh REAL,          -- Energy Returned (-)
       
       -- Sistemas críticos
       equipo_critico TEXT,
-      nuevo_estado TEXT,          -- verde/amarillo/rojo
+      nuevo_estado TEXT,
       
       observaciones TEXT,
       tecnico TEXT DEFAULT 'Técnico Torre K',
@@ -35,19 +36,19 @@ db.serialize(() => {
     )
   `);
 
-  // Tabla de ESTADOS ACTUALES de equipos (CON PANELES SOLARES)
+  // Tabla de ESTADOS ACTUALES
   db.run(`
     CREATE TABLE IF NOT EXISTS estados_equipos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       equipo TEXT UNIQUE NOT NULL,
       estado TEXT DEFAULT 'verde',
-      ultimo_cambio TEXT,         -- fecha del último cambio
+      ultimo_cambio TEXT,
       observaciones TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Insertar equipos críticos iniciales (CON PANELES SOLARES)
+  // Insertar equipos críticos (CON PANELES SOLARES)
   const equiposCriticos = [
     'Cisterna de Agua',
     'Tanque Elevado', 
@@ -58,7 +59,7 @@ db.serialize(() => {
     'Planta de Emergencia',
     'Software de Tickets Estacionamiento',
     'Barrera Estacionamiento',
-    'Paneles Solares',            // ¡MANTENIDO!
+    'Paneles Solares',  // ¡AHORA SÍ ESTÁ!
     'Rampa Hidráulica',
     'Sistema de Gas'
   ];
@@ -73,11 +74,11 @@ db.serialize(() => {
   console.log('✅ Base de datos lista');
 });
 
-// ==================== FUNCIONES DE FECHA ====================
+// ==================== FUNCIONES DE FECHA Y HORA ====================
 function getFechaHoy() {
   const hoy = new Date();
   
-  const fecha = hoy.toISOString().split('T')[0]; // YYYY-MM-DD
+  const fecha = hoy.toISOString().split('T')[0];
   const fechaLegible = hoy.toLocaleDateString('es-MX', {
     weekday: 'long',
     year: 'numeric',
@@ -88,11 +89,20 @@ function getFechaHoy() {
   return { fecha, fechaLegible };
 }
 
-// ==================== ENDPOINTS (SOLO CAMBIO DE NOMBRES) ====================
+function getHoraActual() {
+  return new Date().toLocaleTimeString('es-MX', { 
+    hour12: false, 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+}
 
-// 1. REGISTRAR ACTIVIDAD
+// ==================== ENDPOINTS MEJORADOS ====================
+
+// 1. REGISTRAR ACTIVIDAD (CON HORA AUTOMÁTICA)
 app.post('/api/actividad', (req, res) => {
-  const { fecha, fechaLegible } = getFechaHoy();
+  const { fecha } = getFechaHoy();
+  const hora = getHoraActual();
   
   const {
     ubicacion,
@@ -101,8 +111,8 @@ app.post('/api/actividad', (req, res) => {
     equipo_critico = '',
     nuevo_estado = '',
     agua_m3,
-    energia_consumida,    // Energy Consumed (+) (antes CFE)
-    paneles_kwh,         // Energy Returned (-) (antes Paneles)
+    energia_consumida,
+    paneles_kwh,
     observaciones = ''
   } = req.body;
 
@@ -110,32 +120,44 @@ app.post('/api/actividad', (req, res) => {
     return res.status(400).json({ error: 'Ubicación y actividad son requeridas' });
   }
 
+  console.log(`📝 Registrando actividad: ${actividad.substring(0, 50)}...`);
+
   db.run(`
     INSERT INTO actividades 
-    (fecha, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
+    (fecha, hora, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
      agua_m3, energia_consumida, paneles_kwh, observaciones)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [fecha, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [fecha, hora, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
      agua_m3 || null, energia_consumida || null, paneles_kwh || null, observaciones],
     function(err) {
       if (err) {
-        console.error('Error:', err);
+        console.error('❌ Error:', err.message);
         return res.status(500).json({ error: err.message });
       }
+
+      console.log(`✅ Actividad ${this.lastID} registrada a las ${hora}`);
 
       // ACTUALIZAR ESTADO DEL EQUIPO si se especificó
       if (equipo_critico && nuevo_estado && ['verde', 'amarillo', 'rojo'].includes(nuevo_estado)) {
         db.run(
           `UPDATE estados_equipos 
-           SET estado = ?, ultimo_cambio = ?, observaciones = ?
+           SET estado = ?, ultimo_cambio = ?, observaciones = ?, updated_at = CURRENT_TIMESTAMP
            WHERE equipo = ?`,
-          [nuevo_estado, fecha, observaciones || 'Estado cambiado', equipo_critico]
+          [nuevo_estado, `${fecha} ${hora}`, observaciones || 'Estado cambiado', equipo_critico],
+          function(updateErr) {
+            if (updateErr) {
+              console.error('❌ Error actualizando estado:', updateErr.message);
+            } else {
+              console.log(`✅ Estado de ${equipo_critico} actualizado a ${nuevo_estado}`);
+            }
+          }
         );
       }
 
       res.json({
         success: true,
         id: this.lastID,
+        hora_registrada: hora,
         message: '✅ Actividad registrada' + 
                 (equipo_critico ? ` y estado de ${equipo_critico} actualizado` : ''),
         fecha_guardada: fecha
@@ -144,9 +166,11 @@ app.post('/api/actividad', (req, res) => {
   );
 });
 
-// ENDPOINT: OBTENER ACTIVIDADES DE HOY
+// 2. OBTENER ACTIVIDADES DE HOY (MEJORADO)
 app.get('/api/actividades/hoy', (req, res) => {
   const { fecha } = getFechaHoy();
+  
+  console.log(`📋 Solicitando actividades para ${fecha}`);
   
   db.all(
     `SELECT * FROM actividades 
@@ -154,22 +178,31 @@ app.get('/api/actividades/hoy', (req, res) => {
      ORDER BY created_at DESC`,
     [fecha],
     (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) {
+        console.error('❌ Error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+      console.log(`✅ ${rows.length} actividades encontradas`);
       res.json(rows);
     }
   );
 });
 
-// 2. DASHBOARD GERENCIA (SOLO CAMBIO DE NOMBRES)
+// 3. DASHBOARD GERENCIA (MEJORADO)
 app.get('/api/dashboard/gerencia', (req, res) => {
   const { fecha, fechaLegible } = getFechaHoy();
+  
+  console.log(`📊 Dashboard solicitado para ${fecha}`);
   
   // 1. Obtener estados actuales de equipos
   db.all(
     `SELECT * FROM estados_equipos ORDER BY equipo`,
     [],
     (err, equipos) => {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) {
+        console.error('❌ Error equipos:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
 
       // 2. Obtener CONSUMOS DEL DÍA
       db.get(
@@ -181,7 +214,10 @@ app.get('/api/dashboard/gerencia', (req, res) => {
          WHERE fecha = ?`,
         [fecha],
         (err, consumos) => {
-          if (err) return res.status(500).json({ error: err.message });
+          if (err) {
+            console.error('❌ Error consumos:', err.message);
+            return res.status(500).json({ error: err.message });
+          }
 
           // 3. Obtener actividades de hoy
           db.all(
@@ -191,9 +227,14 @@ app.get('/api/dashboard/gerencia', (req, res) => {
              LIMIT 15`,
             [fecha],
             (err, actividades) => {
-              if (err) return res.status(500).json({ error: err.message });
+              if (err) {
+                console.error('❌ Error actividades:', err.message);
+                return res.status(500).json({ error: err.message });
+              }
 
-              // 4. Calcular energía neta (CONSUMO - PANELES)
+              console.log(`📊 Dashboard: ${actividades.length} actividades, ${equipos.length} equipos`);
+
+              // 4. Calcular energía neta
               const energia_neta = (consumos.consumo_total || 0) - (consumos.paneles_total || 0);
               
               res.json({
@@ -223,54 +264,6 @@ app.get('/api/dashboard/gerencia', (req, res) => {
   );
 });
 
-// 3. EXPORTAR EXCEL (SOLO CAMBIO DE NOMBRES)
-app.get('/api/exportar/excel/:fecha?', (req, res) => {
-  const fechaExportar = req.params.fecha || getFechaHoy().fecha;
-  
-  db.all(
-    `SELECT * FROM actividades 
-     WHERE fecha = ? 
-     ORDER BY created_at`,
-    [fechaExportar],
-    (err, actividades) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      let csv = '';
-      
-      // ENCABEZADOS (con nuevos nombres)
-      csv += 'Fecha,Ubicación,Actividad,Tipo,Equipo Crítico,Nuevo Estado,Agua (m³),Energy Consumed (+),Energy Returned (-),Observaciones,Técnico\n';
-      
-      // DATOS
-      actividades.forEach(a => {
-        csv += `"${a.fecha}","${a.ubicacion}","${a.actividad}","${a.tipo_actividad}",`;
-        csv += `"${a.equipo_critico || ''}","${a.nuevo_estado || ''}",`;
-        csv += `"${a.agua_m3 || ''}","${a.energia_consumida || ''}","${a.paneles_kwh || ''}",`;
-        csv += `"${(a.observaciones || '').replace(/"/g, '""')}","${a.tecnico}"\n`;
-      });
-      
-      // RESUMEN DEL DÍA
-      csv += '\n';
-      csv += 'RESUMEN DEL DÍA,,,,\n';
-      
-      // Calcular totales
-      const aguaTotal = actividades.reduce((sum, a) => sum + (a.agua_m3 || 0), 0);
-      const consumoTotal = actividades.reduce((sum, a) => sum + (a.energia_consumida || 0), 0);
-      const panelesTotal = actividades.reduce((sum, a) => sum + (a.paneles_kwh || 0), 0);
-      const energiaNeta = consumoTotal - panelesTotal;
-      
-      csv += `Total Agua: ${aguaTotal.toFixed(3)} m³\n`;
-      csv += `Total Energy Consumed (+): ${consumoTotal.toFixed(2)} kWh\n`;
-      csv += `Total Energy Returned (-): ${panelesTotal.toFixed(2)} kWh\n`;
-      csv += `Neto CFE: ${energiaNeta.toFixed(2)} kWh (${energiaNeta > 0 ? 'CONSUMO' : 'DEVOLUCIÓN'})\n`;
-      csv += `Total Actividades: ${actividades.length}\n`;
-      
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename="torre_k_${fechaExportar}.csv"`);
-      res.send(csv);
-    }
-  );
-});
-
 // 4. EDITAR ACTIVIDAD
 app.put('/api/actividad/:id', (req, res) => {
   const { id } = req.params;
@@ -284,6 +277,8 @@ app.put('/api/actividad/:id', (req, res) => {
     observaciones
   } = req.body;
 
+  console.log(`✏️ Editando actividad ${id}`);
+
   db.run(`
     UPDATE actividades 
     SET ubicacion = ?, actividad = ?, tipo_actividad = ?,
@@ -295,9 +290,11 @@ app.put('/api/actividad/:id', (req, res) => {
      observaciones || '', id],
     function(err) {
       if (err) {
-        console.error('Error:', err.message);
+        console.error('❌ Error:', err.message);
         return res.status(500).json({ error: err.message });
       }
+
+      console.log(`✅ Actividad ${id} actualizada (${this.changes} cambios)`);
 
       res.json({
         success: true,
@@ -312,14 +309,18 @@ app.put('/api/actividad/:id', (req, res) => {
 app.delete('/api/actividad/:id', (req, res) => {
   const { id } = req.params;
 
+  console.log(`🗑️ Eliminando actividad ${id}`);
+
   db.run(
     `DELETE FROM actividades WHERE id = ?`,
     [id],
     function(err) {
       if (err) {
-        console.error('Error:', err.message);
+        console.error('❌ Error:', err.message);
         return res.status(500).json({ error: err.message });
       }
+
+      console.log(`✅ Actividad ${id} eliminada (${this.changes} cambios)`);
 
       res.json({
         success: true,
@@ -343,7 +344,54 @@ app.get('/api/actividad/:id', (req, res) => {
   );
 });
 
-// ==================== INTERFAZ TÉCNICO (SOLO CAMBIO DE NOMBRES) ====================
+// 7. EXPORTAR EXCEL
+app.get('/api/exportar/excel/:fecha?', (req, res) => {
+  const fechaExportar = req.params.fecha || getFechaHoy().fecha;
+  
+  console.log(`📥 Exportando Excel para ${fechaExportar}`);
+  
+  db.all(
+    `SELECT * FROM actividades 
+     WHERE fecha = ? 
+     ORDER BY hora`,
+    [fechaExportar],
+    (err, actividades) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      let csv = '';
+      
+      csv += 'Fecha,Hora,Ubicación,Actividad,Tipo,Equipo Crítico,Nuevo Estado,Agua (m³),Energy Consumed (+),Energy Returned (-),Observaciones,Técnico\n';
+      
+      actividades.forEach(a => {
+        csv += `"${a.fecha}","${a.hora || ''}","${a.ubicacion}","${a.actividad}","${a.tipo_actividad}",`;
+        csv += `"${a.equipo_critico || ''}","${a.nuevo_estado || ''}",`;
+        csv += `"${a.agua_m3 || ''}","${a.energia_consumida || ''}","${a.paneles_kwh || ''}",`;
+        csv += `"${(a.observaciones || '').replace(/"/g, '""')}","${a.tecnico}"\n`;
+      });
+      
+      const aguaTotal = actividades.reduce((sum, a) => sum + (a.agua_m3 || 0), 0);
+      const consumoTotal = actividades.reduce((sum, a) => sum + (a.energia_consumida || 0), 0);
+      const panelesTotal = actividades.reduce((sum, a) => sum + (a.paneles_kwh || 0), 0);
+      const energiaNeta = consumoTotal - panelesTotal;
+      
+      csv += '\n';
+      csv += 'RESUMEN DEL DÍA,,,,\n';
+      csv += `Total Agua: ${aguaTotal.toFixed(3)} m³\n`;
+      csv += `Total Energy Consumed (+): ${consumoTotal.toFixed(2)} kWh\n`;
+      csv += `Total Energy Returned (-): ${panelesTotal.toFixed(2)} kWh\n`;
+      csv += `Neto CFE: ${energiaNeta.toFixed(2)} kWh (${energiaNeta > 0 ? 'CONSUMO' : 'DEVOLUCIÓN'})\n`;
+      csv += `Total Actividades: ${actividades.length}\n`;
+
+      console.log(`✅ Excel exportado: ${actividades.length} actividades`);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="torre_k_${fechaExportar}.csv"`);
+      res.send(csv);
+    }
+  );
+});
+
+// ==================== INTERFAZ TÉCNICO CORREGIDA ====================
 
 app.get('/tecnico', (req, res) => {
   const { fechaLegible } = getFechaHoy();
@@ -356,7 +404,6 @@ app.get('/tecnico', (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        /* ESTILOS ORIGINALES (igual que tu interfaz) */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fa; }
         .container { max-width: 900px; margin: 0 auto; padding: 20px; }
@@ -442,7 +489,6 @@ app.get('/tecnico', (req, res) => {
         .btn-descargar { background: #2980b9; }
         .btn-descargar:hover { background: #1c6ea4; }
         
-        /* BOTONES PARA EDITAR/BORRAR */
         .btn-editar {
           background: #f39c12;
           color: white;
@@ -508,7 +554,6 @@ app.get('/tecnico', (req, res) => {
         .badge-amarillo { background: #fff3cd; color: #856404; }
         .badge-rojo { background: #f8d7da; color: #721c24; }
         
-        /* MODAL PARA EDITAR */
         .modal {
           display: none;
           position: fixed;
@@ -546,25 +591,32 @@ app.get('/tecnico', (req, res) => {
           cursor: pointer;
         }
         
-        .hora-auto {
+        .auto-refresh-info {
+          background: #e8f4fd;
+          padding: 10px;
+          border-radius: 8px;
+          margin: 10px 0;
           font-size: 0.9em;
-          color: #666;
-          margin-top: 5px;
+          color: #1a73e8;
+          text-align: center;
         }
       </style>
     </head>
     <body>
       <div class="container">
-        <!-- HEADER (IGUAL) -->
+        <!-- HEADER -->
         <div class="header">
           <h1>🔧 Bitácora Técnico - Torre K</h1>
           <p>${fechaLegible}</p>
           <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.9;">
             <strong>📋 Registro diario • Editar/Borrar actividades • Exportar a Excel</strong>
           </p>
+          <div class="auto-refresh-info">
+            ⏰ La hora se registra automáticamente • 🔄 Se actualiza cada 30 segundos
+          </div>
         </div>
         
-        <!-- FORMULARIO PRINCIPAL (SOLO CAMBIO DE NOMBRES) -->
+        <!-- FORMULARIO -->
         <div class="form-section">
           <h2 style="margin-bottom: 20px; color: #2c3e50;">➕ Nueva Actividad</h2>
           
@@ -588,7 +640,7 @@ app.get('/tecnico', (req, res) => {
                   <option value="lectura">📖 Lectura de Medidores</option>
                   <option value="electricidad">⚡ Electricidad CFE</option>
                   <option value="agua">💧 Agua</option>
-                  <option value="paneles">☀️ Paneles Solares</option> <!-- MANTENIDO -->
+                  <option value="paneles">☀️ Paneles Solares</option>
                   <option value="mantenimiento">🔧 Mantenimiento</option>
                   <option value="limpieza">🧹 Limpieza</option>
                   <option value="otro">Otro</option>
@@ -603,7 +655,7 @@ app.get('/tecnico', (req, res) => {
                   <option value="Tanque Elevado">💧 Tanque Elevado</option>
                   <option value="Sistema Eléctrico Principal">⚡ Sistema Eléctrico</option>
                   <option value="Tablero General">⚡ Tablero General</option>
-                  <option value="Paneles Solares">☀️ Paneles Solares</option> <!-- MANTENIDO -->
+                  <option value="Paneles Solares">☀️ Paneles Solares</option> <!-- ¡AHORA SÍ ESTÁ! -->
                   <option value="Software de Tickets Estacionamiento">💰 Software Tickets</option>
                   <option value="Elevador Mitsubishi">🚪 Elevador</option>
                   <option value="Bomba Contra Incendio">🛡️ Bomba Incendio</option>
@@ -612,7 +664,7 @@ app.get('/tecnico', (req, res) => {
               </div>
             </div>
             
-            <!-- CAMPOS DE CONSUMO (SOLO CAMBIO DE NOMBRES) -->
+            <!-- CAMPOS DE CONSUMO -->
             <div class="consumo-row">
               <div>
                 <div class="consumo-label">💧 Agua consumida:</div>
@@ -621,19 +673,19 @@ app.get('/tecnico', (req, res) => {
               </div>
               
               <div>
-                <div class="consumo-label">🔌 Energy Consumed (+):</div> <!-- CAMBIADO -->
+                <div class="consumo-label">🔌 Energy Consumed (+):</div>
                 <input type="number" id="energia_consumida" step="0.1" class="consumo-input" placeholder="kWh">
                 <small style="color: #666;">Consumo CFE</small>
               </div>
               
               <div>
-                <div class="consumo-label">↩️ Energy Returned (-):</div> <!-- CAMBIADO -->
+                <div class="consumo-label">↩️ Energy Returned (-):</div>
                 <input type="number" id="paneles_kwh" step="0.1" class="consumo-input" placeholder="kWh">
                 <small style="color: #666;">Paneles solares</small>
               </div>
             </div>
             
-            <!-- SELECTOR DE ESTADO (IGUAL) -->
+            <!-- SELECTOR DE ESTADO -->
             <div id="selectorEstado" style="margin: 20px 0; padding: 15px; background: #fff8e1; border-radius: 8px; display: none;">
               <label style="color: #f57c00;">🚦 Cambiar estado del sistema:</label>
               <div style="display: flex; gap: 10px; margin-top: 10px;">
@@ -663,16 +715,18 @@ app.get('/tecnico', (req, res) => {
             
             <button type="submit" class="btn">✅ Guardar Actividad</button>
             <button type="button" onclick="exportarExcel()" class="btn btn-descargar">📥 Exportar Hoy a Excel</button>
+            <button type="button" onclick="forzarActualizacion()" class="btn" style="background: #7f8c8d;">🔄 Actualizar Ahora</button>
           </form>
         </div>
         
-        <!-- ACTIVIDADES DE HOY (CON HORA AUTOMÁTICA) -->
+        <!-- ACTIVIDADES DE HOY -->
         <div class="form-section">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 style="color: #2c3e50;">📋 Actividades de hoy</h2>
             <div style="font-size: 0.9em; color: #666;">
               <span id="contadorActividades">0 actividades</span>
               <span id="totalConsumos" style="margin-left: 15px;"></span>
+              <div id="ultimaActualizacion" style="font-size: 0.8em; color: #999; margin-top: 5px;"></div>
             </div>
           </div>
           
@@ -705,7 +759,6 @@ app.get('/tecnico', (req, res) => {
               <textarea id="editar_actividad" rows="3" required></textarea>
             </div>
             
-            <!-- CONSUMO ROW MODAL (CON NUEVOS NOMBRES) -->
             <div class="consumo-row">
               <div>
                 <div class="consumo-label">💧 Agua (m³):</div>
@@ -739,6 +792,7 @@ app.get('/tecnico', (req, res) => {
       <script>
         const API_URL = window.location.origin;
         const hoy = "${getFechaHoy().fecha}";
+        let ultimaActualizacion = null;
         
         // Mostrar selector de estado cuando se selecciona equipo
         document.getElementById('equipo_critico').addEventListener('change', function() {
@@ -753,6 +807,12 @@ app.get('/tecnico', (req, res) => {
         
         // Cargar actividades al iniciar
         cargarActividades();
+        
+        // FUNCIÓN PARA FORZAR ACTUALIZACIÓN
+        function forzarActualizacion() {
+          console.log('🔄 Forzando actualización...');
+          cargarActividades();
+        }
         
         // FORMULARIO NUEVO
         document.getElementById('formActividad').addEventListener('submit', async (e) => {
@@ -770,6 +830,8 @@ app.get('/tecnico', (req, res) => {
             observaciones: document.getElementById('observaciones').value
           };
           
+          console.log('📤 Enviando actividad:', actividad);
+          
           try {
             const response = await fetch(API_URL + '/api/actividad', {
               method: 'POST',
@@ -778,17 +840,22 @@ app.get('/tecnico', (req, res) => {
             });
             
             const data = await response.json();
+            console.log('📥 Respuesta:', data);
             
             if (data.success) {
               alert('✅ ' + data.message);
               document.getElementById('formActividad').reset();
               document.getElementById('selectorEstado').style.display = 'none';
               document.getElementById('nuevo_estado').value = '';
-              cargarActividades();
+              
+              // Actualizar inmediatamente
+              setTimeout(() => {
+                cargarActividades();
+              }, 500);
             }
           } catch (error) {
+            console.error('❌ Error:', error);
             alert('❌ Error de conexión');
-            console.error(error);
           }
         });
         
@@ -877,16 +944,29 @@ app.get('/tecnico', (req, res) => {
           }
         }
         
-        // CARGAR ACTIVIDADES (CON HORA AUTOMÁTICA)
+        // CARGAR ACTIVIDADES (MEJORADO CON ACTUALIZACIÓN EN TIEMPO REAL)
         async function cargarActividades() {
+          console.log('🔄 Cargando actividades...');
+          
           try {
             const response = await fetch(API_URL + '/api/actividades/hoy');
+            
+            if (!response.ok) {
+              throw new Error(\`HTTP error! status: \${response.status}\`);
+            }
+            
             const actividades = await response.json();
+            console.log(\`📦 \${actividades.length} actividades recibidas\`);
             
             const lista = document.getElementById('listaActividades');
             const contador = document.getElementById('contadorActividades');
+            const ultimaActualizacionElem = document.getElementById('ultimaActualizacion');
             
             contador.textContent = \`\${actividades.length} actividades\`;
+            
+            // Actualizar timestamp
+            ultimaActualizacion = new Date();
+            ultimaActualizacionElem.textContent = \`Última actualización: \${ultimaActualizacion.toLocaleTimeString()}\`;
             
             if (actividades.length === 0) {
               lista.innerHTML = '<p style="text-align: center; color: #7f8c8d; padding: 40px;">No hay actividades registradas hoy</p>';
@@ -903,12 +983,8 @@ app.get('/tecnico', (req, res) => {
               if (a.energia_consumida) totalConsumo += parseFloat(a.energia_consumida);
               if (a.paneles_kwh) totalPaneles += parseFloat(a.paneles_kwh);
               
-              // Obtener hora automática del timestamp
-              const fechaCompleta = a.created_at ? new Date(a.created_at) : new Date();
-              const hora = fechaCompleta.toLocaleTimeString('es-MX', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-              });
+              // Usar hora guardada en la base de datos
+              const hora = a.hora || '--:--';
               
               // Determinar clase CSS
               let clase = 'actividad-item';
@@ -917,7 +993,7 @@ app.get('/tecnico', (req, res) => {
               }
               if (a.nuevo_estado === 'rojo') clase += ' critico';
               
-              // Crear badges de consumo (CON NUEVOS NOMBRES)
+              // Crear badges de consumo
               let badges = '';
               if (a.agua_m3) badges += \`<span class="consumo-badge">💧 \${parseFloat(a.agua_m3).toFixed(3)} m³</span>\`;
               if (a.energia_consumida) badges += \`<span class="consumo-badge">🔌 +\${parseFloat(a.energia_consumida).toFixed(1)} kWh</span>\`;
@@ -967,9 +1043,12 @@ app.get('/tecnico', (req, res) => {
             }
             
           } catch (error) {
-            console.error('Error cargando actividades:', error);
+            console.error('❌ Error cargando actividades:', error);
             document.getElementById('listaActividades').innerHTML = 
-              '<p style="color: #e74c3c; text-align: center;">Error cargando actividades</p>';
+              '<p style="color: #e74c3c; text-align: center; padding: 20px;">' +
+              '❌ Error cargando actividades<br>' +
+              '<small>Ver consola para detalles</small>' +
+              '</p>';
           }
         }
         
@@ -978,15 +1057,18 @@ app.get('/tecnico', (req, res) => {
           window.open(API_URL + '/api/exportar/excel/' + hoy, '_blank');
         }
         
-        // Auto-refresh
-        setInterval(cargarActividades, 120000);
+        // Auto-refresh cada 30 segundos (TIEMPO REAL)
+        setInterval(cargarActividades, 30000);
+        
+        // Forzar carga inicial después de 1 segundo
+        setTimeout(cargarActividades, 1000);
       </script>
     </body>
     </html>
   `);
 });
 
-// ==================== DASHBOARD GERENCIA (SOLO CAMBIO DE NOMBRES) ====================
+// ==================== DASHBOARD GERENCIA CORREGIDO ====================
 
 app.get('/gerencia', (req, res) => {
   const { fechaLegible } = getFechaHoy();
@@ -999,7 +1081,6 @@ app.get('/gerencia', (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        /* ESTILOS ORIGINALES (igual que tu interfaz) */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fa; }
         .container { max-width: 1300px; margin: 0 auto; padding: 20px; }
@@ -1110,24 +1191,37 @@ app.get('/gerencia', (req, res) => {
           color: #7f8c8d;
           margin-left: 10px;
         }
+        
+        .auto-refresh-info {
+          background: #e8f4fd;
+          padding: 10px;
+          border-radius: 8px;
+          margin: 10px 0;
+          font-size: 0.9em;
+          color: #1a73e8;
+          text-align: center;
+        }
       </style>
     </head>
     <body>
       <div class="container">
-        <!-- HEADER (IGUAL) -->
+        <!-- HEADER -->
         <div class="header">
           <h1>🏢 Dashboard Gerencia - Torre K</h1>
           <p>${fechaLegible}</p>
           <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.9;">
             Monitoreo de sistemas críticos y consumos diarios
           </p>
+          <div class="auto-refresh-info">
+            🔄 Se actualiza automáticamente cada 30 segundos • Última actualización: <span id="ultimaActualizacion">--:--:--</span>
+          </div>
           <div style="margin-top: 20px;">
-            <button onclick="cargarDashboard()" class="btn">🔄 Actualizar</button>
+            <button onclick="cargarDashboard()" class="btn">🔄 Actualizar Ahora</button>
             <button onclick="exportarExcel()" class="btn btn-descargar">📥 Exportar Hoy a Excel</button>
           </div>
         </div>
         
-        <!-- PANEL DE CONSUMOS (SOLO CAMBIO DE NOMBRES) -->
+        <!-- PANEL DE CONSUMOS -->
         <h2 style="color: #2c3e50; margin-bottom: 15px;">📊 Consumos del Día</h2>
         <div class="consumo-dashboard">
           <div class="consumo-card">
@@ -1173,7 +1267,7 @@ app.get('/gerencia', (req, res) => {
           <p>Cargando sistemas...</p>
         </div>
         
-        <!-- ACTIVIDADES RECIENTES (CON HORA AUTOMÁTICA) -->
+        <!-- ACTIVIDADES RECIENTES -->
         <div style="background: white; padding: 25px; border-radius: 10px; margin-top: 30px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 style="color: #2c3e50;">📝 Actividades Recientes</h2>
@@ -1196,11 +1290,22 @@ app.get('/gerencia', (req, res) => {
         cargarDashboard();
         
         async function cargarDashboard() {
+          console.log('🔄 Cargando dashboard...');
+          
           try {
             const response = await fetch(API_URL + '/api/dashboard/gerencia');
-            const data = await response.json();
             
-            // Actualizar consumos (CON NUEVOS NOMBRES)
+            if (!response.ok) {
+              throw new Error(\`HTTP error! status: \${response.status}\`);
+            }
+            
+            const data = await response.json();
+            console.log(\`📊 Dashboard cargado: \${data.actividades_hoy.length} actividades\`);
+            
+            // Actualizar timestamp
+            document.getElementById('ultimaActualizacion').textContent = new Date().toLocaleTimeString();
+            
+            // Actualizar consumos
             document.getElementById('totalAgua').textContent = data.consumos_dia.agua_m3.toFixed(3);
             document.getElementById('totalConsumo').textContent = data.consumos_dia.energia_consumida.toFixed(1);
             document.getElementById('totalPaneles').textContent = data.consumos_dia.paneles_kwh.toFixed(1);
@@ -1218,7 +1323,7 @@ app.get('/gerencia', (req, res) => {
               balanceTexto.innerHTML = '<span style="color: #27ae60;">DEVOLUCIÓN NETO</span>';
             }
             
-            // Actualizar semáforo
+            // Actualizar semáforo (CON PANELES SOLARES)
             const semaforoGrid = document.getElementById('semaforoGrid');
             semaforoGrid.innerHTML = data.equipos_criticos.map(e => {
               let icono = '🟢';
@@ -1232,7 +1337,7 @@ app.get('/gerencia', (req, res) => {
                   </div>
                   <h3 style="margin: 0 0 10px 0;">\${e.equipo}</h3>
                   <div style="color: #666; font-size: 0.9em; margin-bottom: 10px;">
-                    \${e.ultimo_cambio ? 'Último cambio: ' + e.ultimo_cambio.split(' ')[0] : 'Sin cambios'}
+                    \${e.ultimo_cambio ? 'Último cambio: ' + e.ultimo_cambio : 'Sin cambios'}
                   </div>
                   <span class="badge badge-\${e.estado}">
                     \${e.estado === 'verde' ? 'OPERATIVO' : e.estado === 'amarillo' ? 'ATENCIÓN' : 'CRÍTICO'}
@@ -1246,19 +1351,12 @@ app.get('/gerencia', (req, res) => {
             document.getElementById('contadorAmarillos').textContent = data.semaforo.amarillos;
             document.getElementById('contadorRojos').textContent = data.semaforo.rojos;
             
-            // Mostrar actividades con hora automática
+            // Mostrar actividades (CON HORA)
             const actividadesDiv = document.getElementById('actividadesRecientes');
             if (data.actividades_hoy.length === 0) {
               actividadesDiv.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">No hay actividades hoy</p>';
             } else {
               actividadesDiv.innerHTML = data.actividades_hoy.map(a => {
-                // Obtener hora automática del timestamp
-                const fechaCompleta = a.created_at ? new Date(a.created_at) : new Date();
-                const hora = fechaCompleta.toLocaleTimeString('es-MX', { 
-                  hour: '2-digit', 
-                  minute: '2-digit' 
-                });
-                
                 let consumos = '';
                 if (a.agua_m3) consumos += \`💧 \${a.agua_m3} m³ \`;
                 if (a.energia_consumida) consumos += \`🔌 +\${a.energia_consumida} kWh \`;
@@ -1278,7 +1376,7 @@ app.get('/gerencia', (req, res) => {
                     <div style="flex: 1;">
                       <div>
                         <strong>\${a.actividad}</strong>
-                        <span class="hora-actividad">⏰ \${hora}</span>
+                        <span class="hora-actividad">⏰ \${a.hora || '--:--'}</span>
                         \${estadoBadge}
                       </div>
                       <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
@@ -1296,8 +1394,12 @@ app.get('/gerencia', (req, res) => {
             }
             
           } catch (error) {
-            console.error('Error:', error);
-            alert('Error cargando dashboard');
+            console.error('❌ Error cargando dashboard:', error);
+            document.getElementById('actividadesRecientes').innerHTML = 
+              '<p style="color: #e74c3c; text-align: center; padding: 20px;">' +
+              '❌ Error cargando dashboard<br>' +
+              '<small>Ver consola para detalles</small>' +
+              '</p>';
           }
         }
         
@@ -1306,15 +1408,18 @@ app.get('/gerencia', (req, res) => {
           window.open(API_URL + '/api/exportar/excel/' + hoy, '_blank');
         }
         
-        // Auto-refresh
-        setInterval(cargarDashboard, 180000);
+        // Auto-refresh cada 30 segundos (TIEMPO REAL)
+        setInterval(cargarDashboard, 30000);
+        
+        // Forzar carga inicial
+        setTimeout(cargarDashboard, 1000);
       </script>
     </body>
     </html>
   `);
 });
 
-// ==================== PÁGINA PRINCIPAL (ACTUALIZADA) ====================
+// ==================== PÁGINA PRINCIPAL ====================
 app.get('/', (req, res) => {
   const { fechaLegible } = getFechaHoy();
   
@@ -1406,11 +1511,11 @@ app.get('/', (req, res) => {
         <div class="fecha">${fechaLegible}</div>
         
         <div class="rule">
-          <strong>📋 Sistema mejorado:</strong><br>
-          1. ✏️ Editar/🗑️ eliminar actividades<br>
-          2. ⏰ Hora automática (sin entrada manual)<br>
-          3. 💧 Agua + 🔌 CFE (Consumed/Returned)<br>
-          4. ☀️ Paneles solares incluidos
+          <strong>✅ SISTEMA CORREGIDO:</strong><br>
+          1. ⏰ Hora automática (se guarda en BD)<br>
+          2. ☀️ Paneles solares en sistemas críticos<br>
+          3. 🔄 Actualización en tiempo real (30s)<br>
+          4. ✏️ Editar/🗑️ eliminar actividades
         </div>
         
         <a href="/tecnico" class="card tecnico">
@@ -1420,7 +1525,7 @@ app.get('/', (req, res) => {
             <li>✏️ Editar y 🗑️ eliminar actividades</li>
             <li>💧 Agua + 🔌 CFE (Consumed/Returned)</li>
             <li>☀️ Paneles solares incluidos</li>
-            <li>📥 Exportar a Excel</li>
+            <li>🔄 Actualización automática</li>
           </ul>
         </a>
         
@@ -1431,17 +1536,17 @@ app.get('/', (req, res) => {
             <li>💧 Agua + 🔌 CFE (Consumed/Returned)</li>
             <li>☀️ Paneles solares incluidos</li>
             <li>🚦 Semáforo de sistemas</li>
-            <li>📥 Exportar reportes</li>
+            <li>🔄 Actualización automática</li>
           </ul>
         </a>
         
         <div class="info-box">
-          <strong>💡 Cambios realizados:</strong>
+          <strong>🔧 Problemas solucionados:</strong>
           <ol>
-            <li><strong>Quitado:</strong> Campo de hora manual</li>
-            <li><strong>Cambiado:</strong> "CFE consumida" → <strong>"Energy Consumed (+)"</strong></li>
-            <li><strong>Cambiado:</strong> "Paneles generados" → <strong>"Energy Returned (-)"</strong></li>
-            <li><strong>Mantenido:</strong> Paneles solares ☀️</li>
+            <li><strong>Corregido:</strong> Paneles solares ahora aparecen en sistemas críticos</li>
+            <li><strong>Corregido:</strong> Hora se guarda y muestra correctamente</li>
+            <li><strong>Agregado:</strong> Actualización automática cada 30 segundos</li>
+            <li><strong>Agregado:</strong> Timestamp de última actualización</li>
             <li><strong>Mantenido:</strong> Tu interfaz favorita ✨</li>
           </ol>
         </div>
@@ -1458,6 +1563,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Principal: http://localhost:${PORT}`);
   console.log(`👷 Técnico (EDITAR/BORRAR): http://localhost:${PORT}/tecnico`);
   console.log(`👔 Gerencia (SOLO LECTURA): http://localhost:${PORT}/gerencia`);
-  console.log(`📊 Métricas: 💧 Agua + 🔌 CFE (Consumed/Returned) + ☀️ Paneles`);
+  console.log(`🔄 Actualización automática cada 30 segundos`);
+  console.log(`☀️ Paneles solares incluidos en sistemas críticos`);
   console.log(`=========================================\n`);
 });
