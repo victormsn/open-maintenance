@@ -9,153 +9,166 @@ app.use(express.json());
 // Base de datos SQLite
 const db = new sqlite3.Database('/tmp/database.sqlite');
 
-// ==================== CREAR TABLAS MEJORADAS ====================
+// ==================== CREAR TABLAS ====================
 db.serialize(() => {
-  // Tabla principal de actividades diarias
+  // Tabla principal de actividades (HISTORIAL PERMANENTE)
   db.run(`
     CREATE TABLE IF NOT EXISTS actividades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      fecha TEXT NOT NULL,
-      hora TEXT NOT NULL,
+      fecha TEXT NOT NULL,        -- YYYY-MM-DD
+      hora TEXT NOT NULL,         -- HH:MM
       ubicacion TEXT NOT NULL,
       actividad TEXT NOT NULL,
       tipo_actividad TEXT,
       
-      -- Sistemas/equipos afectados
-      sistemas_afectados TEXT,
+      -- CONSUMOS (para reportes)
+      agua_m3 REAL,               -- metros cúbicos de agua
+      energia_kwh REAL,           -- kWh consumidos de CFE
+      paneles_kwh REAL,           -- kWh generados por paneles
       
-      -- Datos de consumo (si aplica)
-      agua_consumida REAL,
-      energia_consumida REAL,
-      observaciones TEXT,
-      
-      -- Cambio de estado de equipo (si aplica)
+      -- Sistemas críticos
       equipo_critico TEXT,
-      nuevo_estado TEXT,
+      nuevo_estado TEXT,          -- verde/amarillo/rojo
       
+      observaciones TEXT,
       tecnico TEXT DEFAULT 'Técnico Torre K',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Tabla de SISTEMAS CRÍTICOS (con semaforización automática)
+  // Tabla de ESTADOS ACTUALES de equipos
   db.run(`
-    CREATE TABLE IF NOT EXISTS sistemas_criticos (
+    CREATE TABLE IF NOT EXISTS estados_equipos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nombre TEXT UNIQUE NOT NULL,
-      categoria TEXT NOT NULL,
-      estado TEXT CHECK(estado IN ('verde', 'amarillo', 'rojo')) DEFAULT 'verde',
-      ubicacion TEXT,
-      ultima_actividad TEXT,
+      equipo TEXT UNIQUE NOT NULL,
+      estado TEXT DEFAULT 'verde',
+      ultimo_cambio TEXT,         -- fecha del último cambio
       observaciones TEXT,
-      prioridad INTEGER DEFAULT 1
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Insertar TODOS los sistemas críticos (actualizado)
-  const sistemasCriticos = [
-    // CATEGORÍA 1: INFRAESTRUCTURA CRÍTICA (prioridad máxima)
-    { nombre: 'Cisterna de Agua', categoria: 'agua', ubicacion: 'Sótano', prioridad: 1 },
-    { nombre: 'Tanque Elevado', categoria: 'agua', ubicacion: 'Azotea', prioridad: 1 },
-    { nombre: 'Sistema Eléctrico Principal', categoria: 'electricidad', ubicacion: 'Cuarto Eléctrico', prioridad: 1 },
-    { nombre: 'Tablero General', categoria: 'electricidad', ubicacion: 'Sótano', prioridad: 1 },
-    { nombre: 'Elevador Mitsubishi', categoria: 'transporte', ubicacion: 'Torre K', prioridad: 1 },
-    
-    // CATEGORÍA 2: SEGURIDAD
-    { nombre: 'Bomba Contra Incendio', categoria: 'seguridad', ubicacion: 'Sótano', prioridad: 1 },
-    { nombre: 'Sistema Contra Incendio', categoria: 'seguridad', ubicacion: 'Todo el edificio', prioridad: 1 },
-    { nombre: 'Planta de Emergencia', categoria: 'electricidad', ubicacion: 'Sótano', prioridad: 1 },
-    
-    // CATEGORÍA 3: SISTEMAS DE INGRESOS
-    { nombre: 'Software de Tickets Estacionamiento', categoria: 'ingresos', ubicacion: 'Caseta Estacionamiento', prioridad: 1 },
-    { nombre: 'Barrera Estacionamiento', categoria: 'ingresos', ubicacion: 'Entrada Estacionamiento', prioridad: 2 },
-    { nombre: 'Cámaras de Seguridad', categoria: 'seguridad', ubicacion: 'Todo el edificio', prioridad: 2 },
-    
-    // CATEGORÍA 4: INFRAESTRUCTURA GENERAL
-    { nombre: 'Paneles Solares', categoria: 'energia', ubicacion: 'Azotea', prioridad: 2 },
-    { nombre: 'Rampa Hidráulica', categoria: 'acceso', ubicacion: 'Estacionamiento', prioridad: 2 },
-    { nombre: 'Sistema de Drenaje', categoria: 'plomeria', ubicacion: 'Todo el edificio', prioridad: 3 },
-    { nombre: 'Aire Acondicionado Central', categoria: 'clima', ubicacion: 'Azotea', prioridad: 3 },
-    { nombre: 'Sistema de Gas', categoria: 'gas', ubicacion: 'Cocinas', prioridad: 1 },
+  // Insertar equipos críticos iniciales
+  const equiposCriticos = [
+    'Cisterna de Agua',
+    'Tanque Elevado', 
+    'Sistema Eléctrico Principal',
+    'Tablero General',
+    'Elevador Mitsubishi',
+    'Bomba Contra Incendio',
+    'Planta de Emergencia',
+    'Software de Tickets Estacionamiento',
+    'Barrera Estacionamiento',
+    'Paneles Solares',
+    'Rampa Hidráulica',
+    'Sistema de Gas'
   ];
 
-  sistemasCriticos.forEach(sistema => {
+  equiposCriticos.forEach(equipo => {
     db.run(
-      `INSERT OR IGNORE INTO sistemas_criticos (nombre, categoria, ubicacion, prioridad) VALUES (?, ?, ?, ?)`,
-      [sistema.nombre, sistema.categoria, sistema.ubicacion, sistema.prioridad]
+      `INSERT OR IGNORE INTO estados_equipos (equipo, estado) VALUES (?, 'verde')`,
+      [equipo]
     );
   });
 
-  console.log('✅ Base de datos con sistemas críticos completa');
+  console.log('✅ Base de datos lista');
 });
 
-// ==================== ENDPOINTS MEJORADOS ====================
+// ==================== FUNCIONES DE FECHA ====================
+function getFechaHoy() {
+  const hoy = new Date();
+  // AJUSTAR: Restar 1 día si estamos probando en año nuevo
+  // const offset = -1; // Para prueba
+  const offset = 0; // Para producción
+  
+  hoy.setDate(hoy.getDate() + offset);
+  
+  const fecha = hoy.toISOString().split('T')[0]; // YYYY-MM-DD
+  const fechaLegible = hoy.toLocaleDateString('es-MX', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  
+  return { fecha, fechaLegible };
+}
 
-// 1. REGISTRAR ACTIVIDAD DIARIA (con opción de cambiar estado de sistema)
+function getHoraActual() {
+  return new Date().toLocaleTimeString('es-MX', { 
+    hour12: false, 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+}
+
+// ==================== ENDPOINTS ====================
+
+// 1. REGISTRAR ACTIVIDAD
 app.post('/api/actividad', (req, res) => {
+  const { fechaLegible } = getFechaHoy();
+  const horaActual = getHoraActual();
+  
   const {
-    fecha = new Date().toISOString().split('T')[0],
-    hora = new Date().toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+    fecha = getFechaHoy().fecha,
+    hora = horaActual,
     ubicacion,
     actividad,
     tipo_actividad = 'otro',
-    sistemas_afectados = '',
     equipo_critico = '',
     nuevo_estado = '',
-    agua_consumida,
-    energia_consumida,
+    agua_m3,
+    energia_kwh,
+    paneles_kwh,
     observaciones = ''
   } = req.body;
 
-  // Validar campos mínimos
   if (!ubicacion || !actividad) {
     return res.status(400).json({ error: 'Ubicación y actividad son requeridas' });
   }
 
   db.run(`
     INSERT INTO actividades 
-    (fecha, hora, ubicacion, actividad, tipo_actividad, sistemas_afectados, equipo_critico, nuevo_estado, agua_consumida, energia_consumida, observaciones)
+    (fecha, hora, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, agua_m3, energia_kwh, paneles_kwh, observaciones)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [fecha, hora, ubicacion, actividad, tipo_actividad, sistemas_afectados, equipo_critico, nuevo_estado, agua_consumida || null, energia_consumida || null, observaciones],
+    [fecha, hora, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
+     agua_m3 || null, energia_kwh || null, paneles_kwh || null, observaciones],
     function(err) {
       if (err) {
         console.error('Error:', err);
         return res.status(500).json({ error: err.message });
       }
 
-      // ✅ ACTUALIZAR ESTADO DEL SISTEMA CRÍTICO SI SE ESPECIFICA
+      // ACTUALIZAR ESTADO DEL EQUIPO si se especificó
       if (equipo_critico && nuevo_estado && ['verde', 'amarillo', 'rojo'].includes(nuevo_estado)) {
         db.run(
-          `UPDATE sistemas_criticos 
-           SET estado = ?, ultima_actividad = ?, observaciones = ?
-           WHERE nombre = ?`,
-          [nuevo_estado, `${fecha} ${hora}`, observaciones || 'Estado cambiado por técnico', equipo_critico],
-          function(updateErr) {
-            if (updateErr) console.error('Error actualizando sistema:', updateErr);
-            else console.log(`✅ Estado de ${equipo_critico} cambiado a ${nuevo_estado}`);
-          }
+          `UPDATE estados_equipos 
+           SET estado = ?, ultimo_cambio = ?, observaciones = ?
+           WHERE equipo = ?`,
+          [nuevo_estado, `${fecha} ${hora}`, observaciones || 'Estado cambiado', equipo_critico]
         );
       }
 
       res.json({
         success: true,
         id: this.lastID,
-        message: '✅ Actividad registrada correctamente' + 
-                (equipo_critico ? ` y estado de ${equipo_critico} actualizado` : '')
+        message: '✅ Actividad registrada' + 
+                (equipo_critico ? ` y estado de ${equipo_critico} actualizado` : ''),
+        fecha_guardada: fecha
       });
     }
   );
 });
 
-// 2. OBTENER ACTIVIDADES DEL DÍA
+// 2. OBTENER ACTIVIDADES DEL DÍA (con consumos)
 app.get('/api/actividades/hoy', (req, res) => {
-  const hoy = new Date().toISOString().split('T')[0];
+  const { fecha } = getFechaHoy();
   
   db.all(
     `SELECT * FROM actividades 
      WHERE fecha = ? 
      ORDER BY hora DESC`,
-    [hoy],
+    [fecha],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows);
@@ -163,67 +176,73 @@ app.get('/api/actividades/hoy', (req, res) => {
   );
 });
 
-// 3. DASHBOARD GERENCIA (solo lectura)
-app.get('/api/dashboard/gerencia', (req, res) => {
-  // Obtener sistemas por categoría
+// 3. OBTENER ACTIVIDADES POR FECHA ESPECÍFICA
+app.get('/api/actividades/fecha/:fecha', (req, res) => {
   db.all(
-    `SELECT *, 
-            CASE 
-              WHEN estado = 'verde' THEN '🟢 OPERATIVO'
-              WHEN estado = 'amarillo' THEN '🟡 ATENCIÓN'
-              ELSE '🔴 CRÍTICO'
-            END as estado_texto
-     FROM sistemas_criticos 
-     ORDER BY 
-       CASE estado 
-         WHEN 'rojo' THEN 1
-         WHEN 'amarillo' THEN 2
-         ELSE 3
-       END,
-       prioridad,
-       categoria,
-       nombre`,
+    `SELECT * FROM actividades 
+     WHERE fecha = ? 
+     ORDER BY hora DESC`,
+    [req.params.fecha],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    }
+  );
+});
+
+// 4. DASHBOARD GERENCIA CON CONSUMOS
+app.get('/api/dashboard/gerencia', (req, res) => {
+  const { fecha, fechaLegible } = getFechaHoy();
+  
+  // 1. Obtener estados actuales de equipos
+  db.all(
+    `SELECT * FROM estados_equipos ORDER BY equipo`,
     [],
-    (err, sistemas) => {
+    (err, equipos) => {
       if (err) return res.status(500).json({ error: err.message });
 
-      // Obtener resumen por categoría
-      db.all(
+      // 2. Obtener CONSUMOS DEL DÍA
+      db.get(
         `SELECT 
-           categoria,
-           COUNT(*) as total,
-           SUM(CASE WHEN estado = 'verde' THEN 1 ELSE 0 END) as verdes,
-           SUM(CASE WHEN estado = 'amarillo' THEN 1 ELSE 0 END) as amarillos,
-           SUM(CASE WHEN estado = 'rojo' THEN 1 ELSE 0 END) as rojos
-         FROM sistemas_criticos 
-         GROUP BY categoria
-         ORDER BY 
-           SUM(CASE WHEN estado = 'rojo' THEN 1 ELSE 0 END) DESC,
-           SUM(CASE WHEN estado = 'amarillo' THEN 1 ELSE 0 END) DESC`,
-        [],
-        (err, categorias) => {
+           SUM(COALESCE(agua_m3, 0)) as agua_total,
+           SUM(COALESCE(energia_kwh, 0)) as cfe_total,
+           SUM(COALESCE(paneles_kwh, 0)) as paneles_total
+         FROM actividades 
+         WHERE fecha = ?`,
+        [fecha],
+        (err, consumos) => {
           if (err) return res.status(500).json({ error: err.message });
 
-          // Obtener últimas actividades con cambios de estado
+          // 3. Obtener actividades de hoy (con consumos)
           db.all(
             `SELECT * FROM actividades 
-             WHERE equipo_critico != '' OR nuevo_estado != ''
-             ORDER BY created_at DESC 
-             LIMIT 10`,
-            [],
-            (err, cambios) => {
+             WHERE fecha = ? 
+             ORDER BY hora DESC 
+             LIMIT 15`,
+            [fecha],
+            (err, actividades) => {
               if (err) return res.status(500).json({ error: err.message });
 
+              // 4. Calcular energía neta
+              const energia_neta = (consumos.cfe_total || 0) - (consumos.paneles_total || 0);
+              
               res.json({
-                fecha: new Date().toISOString().split('T')[0],
-                sistemas_criticos: sistemas,
-                resumen_categorias: categorias,
-                cambios_recientes: cambios,
-                semaforo_total: {
-                  total: sistemas.length,
-                  verdes: sistemas.filter(s => s.estado === 'verde').length,
-                  amarillos: sistemas.filter(s => s.estado === 'amarillo').length,
-                  rojos: sistemas.filter(s => s.estado === 'rojo').length
+                fecha: fecha,
+                fecha_legible: fechaLegible,
+                equipos_criticos: equipos,
+                consumos_dia: {
+                  agua_m3: consumos.agua_total || 0,
+                  cfe_kwh: consumos.cfe_total || 0,
+                  paneles_kwh: consumos.paneles_total || 0,
+                  energia_neta: energia_neta,
+                  balance: energia_neta > 0 ? 'CONSUMO' : 'GENERACIÓN'
+                },
+                actividades_hoy: actividades,
+                semaforo: {
+                  total: equipos.length,
+                  verdes: equipos.filter(e => e.estado === 'verde').length,
+                  amarillos: equipos.filter(e => e.estado === 'amarillo').length,
+                  rojos: equipos.filter(e => e.estado === 'rojo').length
                 }
               });
             }
@@ -234,84 +253,78 @@ app.get('/api/dashboard/gerencia', (req, res) => {
   );
 });
 
-// 4. OBTENER SISTEMAS CRÍTICOS PARA SELECT (técnico)
-app.get('/api/sistemas-criticos', (req, res) => {
+// 5. EXPORTAR EXCEL POR DÍA (formato para pegar manualmente)
+app.get('/api/exportar/excel/:fecha?', (req, res) => {
+  const fechaExportar = req.params.fecha || getFechaHoy().fecha;
+  
   db.all(
-    `SELECT nombre, categoria, estado, ubicacion 
-     FROM sistemas_criticos 
-     ORDER BY categoria, nombre`,
-    [],
-    (err, rows) => {
+    `SELECT * FROM actividades 
+     WHERE fecha = ? 
+     ORDER BY hora`,
+    [fechaExportar],
+    (err, actividades) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
+
+      // Crear CSV optimizado para Excel
+      let csv = '';
+      
+      // ENCABEZADOS (primera fila)
+      csv += 'Fecha,Hora,Ubicación,Actividad,Tipo,Equipo Crítico,Nuevo Estado,Agua (m³),CFE (kWh),Paneles (kWh),Observaciones,Técnico\n';
+      
+      // DATOS
+      actividades.forEach(a => {
+        csv += `"${a.fecha}","${a.hora}","${a.ubicacion}","${a.actividad}","${a.tipo_actividad}",`;
+        csv += `"${a.equipo_critico || ''}","${a.nuevo_estado || ''}",`;
+        csv += `"${a.agua_m3 || ''}","${a.energia_kwh || ''}","${a.paneles_kwh || ''}",`;
+        csv += `"${(a.observaciones || '').replace(/"/g, '""')}","${a.tecnico}"\n`;
+      });
+      
+      // RESUMEN DEL DÍA (filas adicionales)
+      csv += '\n';
+      csv += 'RESUMEN DEL DÍA,,,,\n';
+      
+      // Calcular totales
+      const aguaTotal = actividades.reduce((sum, a) => sum + (a.agua_m3 || 0), 0);
+      const cfeTotal = actividades.reduce((sum, a) => sum + (a.energia_kwh || 0), 0);
+      const panelesTotal = actividades.reduce((sum, a) => sum + (a.paneles_kwh || 0), 0);
+      const energiaNeta = cfeTotal - panelesTotal;
+      
+      csv += `Total Agua: ${aguaTotal.toFixed(2)} m³\n`;
+      csv += `Total CFE: ${cfeTotal.toFixed(2)} kWh\n`;
+      csv += `Total Paneles: ${panelesTotal.toFixed(2)} kWh\n`;
+      csv += `Energía Neta: ${energiaNeta.toFixed(2)} kWh (${energiaNeta > 0 ? 'CONSUMO' : 'GENERACIÓN'})\n`;
+      csv += `Total Actividades: ${actividades.length}\n`;
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="torre_k_${fechaExportar}.csv"`);
+      res.send(csv);
     }
   );
 });
 
-// 5. HISTORIAL DE CAMBIOS DE UN SISTEMA
-app.get('/api/historial-sistema/:nombre', (req, res) => {
+// 6. VER HISTORIAL POR EQUIPO
+app.get('/api/historial/equipo/:equipo', (req, res) => {
   db.all(
     `SELECT fecha, hora, actividad, nuevo_estado, observaciones, tecnico
      FROM actividades 
      WHERE equipo_critico = ?
      ORDER BY fecha DESC, hora DESC
-     LIMIT 20`,
-    [req.params.nombre],
+     LIMIT 30`,
+    [req.params.equipo],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows);
-    }
-  );
-});
-
-// 6. DESCARGAR REPORTE COMPLETO
-app.get('/api/descargar/reporte', (req, res) => {
-  const fecha = new Date().toISOString().split('T')[0];
-  
-  // Obtener todas las actividades del mes
-  db.all(
-    `SELECT * FROM actividades 
-     WHERE fecha >= date('now', '-30 days')
-     ORDER BY fecha DESC, hora DESC`,
-    [],
-    (err, actividades) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      // Obtener estado actual de sistemas
-      db.all(
-        `SELECT * FROM sistemas_criticos ORDER BY categoria, nombre`,
-        [],
-        (err, sistemas) => {
-          if (err) return res.status(500).json({ error: err.message });
-
-          // Crear CSV
-          let csv = '=== SISTEMAS CRÍTICOS TORRE K ===\n';
-          csv += 'Categoría,Sistema,Ubicación,Estado,Última Actividad,Observaciones\n';
-          
-          sistemas.forEach(s => {
-            csv += `"${s.categoria}","${s.nombre}","${s.ubicacion}","${s.estado}","${s.ultima_actividad || ''}","${s.observaciones || ''}"\n`;
-          });
-
-          csv += '\n=== ACTIVIDADES RECIENTES (30 días) ===\n';
-          csv += 'Fecha,Hora,Ubicación,Actividad,Sistema Afectado,Nuevo Estado,Observaciones\n';
-          
-          actividades.forEach(a => {
-            csv += `"${a.fecha}","${a.hora}","${a.ubicacion}","${a.actividad}","${a.equipo_critico || ''}","${a.nuevo_estado || ''}","${a.observaciones || ''}"\n`;
-          });
-
-          res.setHeader('Content-Type', 'text/csv');
-          res.setHeader('Content-Disposition', `attachment; filename="reporte_torre_k_${fecha}.csv"`);
-          res.send(csv);
-        }
-      );
     }
   );
 });
 
 // ==================== INTERFACES HTML ====================
 
-// INTERFAZ TÉCNICO MEJORADA (con cambio de estado)
+// INTERFAZ TÉCNICO (con campos de consumo)
 app.get('/tecnico', (req, res) => {
+  const { fechaLegible } = getFechaHoy();
+  const horaActual = getHoraActual();
+  
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -365,6 +378,28 @@ app.get('/tecnico', (req, res) => {
           transition: border 0.3s;
         }
         
+        .consumo-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 15px;
+          margin: 15px 0;
+          padding: 15px;
+          background: #e8f4fd;
+          border-radius: 8px;
+        }
+        
+        .consumo-label {
+          font-size: 0.85em;
+          color: #1a73e8;
+          margin-bottom: 5px;
+        }
+        
+        .consumo-input {
+          background: white;
+          padding: 10px;
+          border: 1px solid #bbdefb;
+        }
+        
         .btn {
           background: #27ae60;
           color: white;
@@ -380,22 +415,31 @@ app.get('/tecnico', (req, res) => {
         }
         
         .btn:hover { background: #219653; }
-        .btn-cambiar-estado { background: #f39c12; }
-        .btn-cambiar-estado:hover { background: #e67e22; }
+        .btn-descargar { background: #2980b9; }
+        .btn-descargar:hover { background: #1c6ea4; }
         
         .actividad-item {
           padding: 15px;
-          border-left: 4px solid;
+          border-left: 4px solid #27ae60;
           margin-bottom: 10px;
           background: #f8f9fa;
           border-radius: 6px;
         }
         
-        .estado-verde { border-left-color: #27ae60; }
-        .estado-amarillo { border-left-color: #f39c12; }
-        .estado-rojo { border-left-color: #e74c3c; }
+        .actividad-item.con-consumo { border-left-color: #2196f3; }
+        .actividad-item.critico { border-left-color: #e74c3c; }
         
-        .badge {
+        .consumo-badge {
+          display: inline-block;
+          background: #e3f2fd;
+          color: #1565c0;
+          padding: 3px 8px;
+          border-radius: 12px;
+          font-size: 0.85em;
+          margin-left: 8px;
+        }
+        
+        .estado-badge {
           display: inline-block;
           padding: 3px 10px;
           border-radius: 12px;
@@ -407,31 +451,6 @@ app.get('/tecnico', (req, res) => {
         .badge-verde { background: #d5f4e6; color: #27ae60; }
         .badge-amarillo { background: #fff3cd; color: #856404; }
         .badge-rojo { background: #f8d7da; color: #721c24; }
-        
-        .estado-selector {
-          display: flex;
-          gap: 10px;
-          margin-top: 10px;
-        }
-        
-        .estado-btn {
-          flex: 1;
-          padding: 10px;
-          text-align: center;
-          border-radius: 6px;
-          cursor: pointer;
-          border: 2px solid #ddd;
-          background: white;
-          font-weight: 600;
-        }
-        
-        .estado-btn.selected {
-          border-width: 3px;
-        }
-        
-        .estado-btn.verde { border-color: #27ae60; color: #27ae60; }
-        .estado-btn.amarillo { border-color: #f39c12; color: #f39c12; }
-        .estado-btn.rojo { border-color: #e74c3c; color: #e74c3c; }
       </style>
     </head>
     <body>
@@ -439,15 +458,15 @@ app.get('/tecnico', (req, res) => {
         <!-- HEADER -->
         <div class="header">
           <h1>🔧 Bitácora Técnico - Torre K</h1>
-          <p>Registro de actividades y cambio de estado de sistemas • ${new Date().toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          <p>${fechaLegible}</p>
           <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.9;">
-            <strong>⚠️ IMPORTANTE:</strong> Reporta fallas y cambia estado de sistemas aquí
+            <strong>📋 Registro diario • Historial permanente • Exportar a Excel</strong>
           </p>
         </div>
         
         <!-- FORMULARIO PRINCIPAL -->
         <div class="form-section">
-          <h2 style="margin-bottom: 20px; color: #2c3e50;">➕ Registrar Actividad</h2>
+          <h2 style="margin-bottom: 20px; color: #2c3e50;">➕ Nueva Actividad</h2>
           
           <form id="formActividad">
             <div class="form-row">
@@ -457,25 +476,24 @@ app.get('/tecnico', (req, res) => {
               </div>
               <div>
                 <label>🕒 Hora:</label>
-                <input type="time" id="hora" value="${new Date().toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit' })}" required>
+                <input type="time" id="hora" value="${horaActual}" required>
               </div>
             </div>
             
             <div style="margin-bottom: 20px;">
               <label>🔧 Actividad realizada:</label>
-              <textarea id="actividad" rows="3" placeholder="Ej: Revisión de cisterna, cambio de bomba, reparación eléctrica..." required></textarea>
+              <textarea id="actividad" rows="3" placeholder="Ej: Lectura de medidores, revisión de paneles, reparación..." required></textarea>
             </div>
             
             <div class="form-row">
               <div>
                 <label>📋 Tipo de actividad:</label>
                 <select id="tipo_actividad">
+                  <option value="lectura">📖 Lectura de Medidores</option>
                   <option value="electricidad">⚡ Electricidad</option>
-                  <option value="plomeria">🔧 Plomería</option>
-                  <option value="agua">💧 Sistema de Agua</option>
-                  <option value="seguridad">🛡️ Seguridad</option>
-                  <option value="ingresos">💰 Sistemas de Ingresos</option>
-                  <option value="jardineria">🌿 Jardinería</option>
+                  <option value="agua">💧 Agua</option>
+                  <option value="paneles">☀️ Paneles Solares</option>
+                  <option value="mantenimiento">🔧 Mantenimiento</option>
                   <option value="limpieza">🧹 Limpieza</option>
                   <option value="otro">Otro</option>
                 </select>
@@ -484,72 +502,70 @@ app.get('/tecnico', (req, res) => {
               <div>
                 <label>⚡ Sistema crítico afectado:</label>
                 <select id="equipo_critico">
-                  <option value="">-- Ninguno (actividad general) --</option>
-                  <optgroup label="💧 Agua">
-                    <option value="Cisterna de Agua">Cisterna de Agua</option>
-                    <option value="Tanque Elevado">Tanque Elevado</option>
-                  </optgroup>
-                  <optgroup label="⚡ Electricidad">
-                    <option value="Sistema Eléctrico Principal">Sistema Eléctrico Principal</option>
-                    <option value="Tablero General">Tablero General</option>
-                    <option value="Planta de Emergencia">Planta de Emergencia</option>
-                  </optgroup>
-                  <optgroup label="🚪 Transporte">
-                    <option value="Elevador Mitsubishi">Elevador Mitsubishi</option>
-                    <option value="Rampa Hidráulica">Rampa Hidráulica</option>
-                  </optgroup>
-                  <optgroup label="🛡️ Seguridad">
-                    <option value="Bomba Contra Incendio">Bomba Contra Incendio</option>
-                    <option value="Sistema Contra Incendio">Sistema Contra Incendio</option>
-                  </optgroup>
-                  <optgroup label="💰 Ingresos">
-                    <option value="Software de Tickets Estacionamiento">Software Tickets Estacionamiento</option>
-                    <option value="Barrera Estacionamiento">Barrera Estacionamiento</option>
-                  </optgroup>
-                  <optgroup label="☀️ Energía">
-                    <option value="Paneles Solares">Paneles Solares</option>
-                  </optgroup>
+                  <option value="">-- Ninguno --</option>
+                  <option value="Cisterna de Agua">💧 Cisterna de Agua</option>
+                  <option value="Tanque Elevado">💧 Tanque Elevado</option>
+                  <option value="Sistema Eléctrico Principal">⚡ Sistema Eléctrico</option>
+                  <option value="Paneles Solares">☀️ Paneles Solares</option>
+                  <option value="Software de Tickets Estacionamiento">💰 Software Tickets</option>
+                  <option value="Elevador Mitsubishi">🚪 Elevador</option>
+                  <option value="Bomba Contra Incendio">🛡️ Bomba Incendio</option>
+                  <option value="Planta de Emergencia">🔋 Planta Emergencia</option>
                 </select>
               </div>
             </div>
             
-            <!-- SELECTOR DE ESTADO (solo si se selecciona sistema crítico) -->
-            <div id="selectorEstado" style="display: none; margin-bottom: 20px;">
-              <label>🚦 Cambiar estado del sistema:</label>
-              <div class="estado-selector">
-                <div class="estado-btn verde" data-estado="verde" onclick="seleccionarEstado('verde')">
+            <!-- CAMPOS DE CONSUMO -->
+            <div class="consumo-row">
+              <div>
+                <div class="consumo-label">💧 Agua consumida:</div>
+                <input type="number" id="agua_m3" step="0.001" class="consumo-input" placeholder="m³">
+                <small style="color: #666;">metros cúbicos</small>
+              </div>
+              
+              <div>
+                <div class="consumo-label">⚡ CFE consumida:</div>
+                <input type="number" id="energia_kwh" step="0.1" class="consumo-input" placeholder="kWh">
+                <small style="color: #666;">kilowatt-hora</small>
+              </div>
+              
+              <div>
+                <div class="consumo-label">☀️ Paneles generados:</div>
+                <input type="number" id="paneles_kwh" step="0.1" class="consumo-input" placeholder="kWh">
+                <small style="color: #666;">kilowatt-hora</small>
+              </div>
+            </div>
+            
+            <!-- SELECTOR DE ESTADO -->
+            <div id="selectorEstado" style="margin: 20px 0; padding: 15px; background: #fff8e1; border-radius: 8px; display: none;">
+              <label style="color: #f57c00;">🚦 Cambiar estado del sistema:</label>
+              <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <label style="flex: 1; text-align: center;">
+                  <input type="radio" name="estado" value="verde" onclick="document.getElementById('nuevo_estado').value='verde'">
                   🟢 OPERATIVO
-                </div>
-                <div class="estado-btn amarillo" data-estado="amarillo" onclick="seleccionarEstado('amarillo')">
+                </label>
+                <label style="flex: 1; text-align: center;">
+                  <input type="radio" name="estado" value="amarillo" onclick="document.getElementById('nuevo_estado').value='amarillo'">
                   🟡 ATENCIÓN
-                </div>
-                <div class="estado-btn rojo" data-estado="rojo" onclick="seleccionarEstado('rojo')">
+                </label>
+                <label style="flex: 1; text-align: center;">
+                  <input type="radio" name="estado" value="rojo" onclick="document.getElementById('nuevo_estado').value='rojo'">
                   🔴 CRÍTICO
-                </div>
+                </label>
               </div>
               <input type="hidden" id="nuevo_estado" value="">
-              <p style="font-size: 0.85em; color: #666; margin-top: 8px;">
-                <strong>Guía:</strong> Verde=Normal • Amarillo=Falla menor • Rojo=Falla grave/Paro
+              <p style="font-size: 0.85em; color: #666; margin-top: 10px;">
+                <strong>Nota:</strong> El estado queda guardado hasta que lo cambies de nuevo
               </p>
             </div>
             
-            <div class="form-row">
-              <div>
-                <label>💧 Agua consumida (litros):</label>
-                <input type="number" id="agua_consumida" step="0.1" placeholder="Opcional">
-              </div>
-              <div>
-                <label>⚡ Energía consumida (kWh):</label>
-                <input type="number" id="energia_consumida" step="0.1" placeholder="Opcional">
-              </div>
-            </div>
-            
             <div style="margin-bottom: 20px;">
-              <label>📝 Observaciones/Diagnóstico:</label>
-              <textarea id="observaciones" rows="3" placeholder="Detalles de la falla, hallazgos, recomendaciones..."></textarea>
+              <label>📝 Observaciones:</label>
+              <textarea id="observaciones" rows="2" placeholder="Detalles, lecturas exactas, fallas encontradas..."></textarea>
             </div>
             
             <button type="submit" class="btn">✅ Guardar Actividad</button>
+            <button type="button" onclick="exportarExcel()" class="btn btn-descargar">📥 Exportar Hoy a Excel</button>
           </form>
         </div>
         
@@ -557,8 +573,9 @@ app.get('/tecnico', (req, res) => {
         <div class="form-section">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 style="color: #2c3e50;">📋 Actividades de hoy</h2>
-            <div>
-              <button onclick="cargarActividades()" class="btn">🔄 Actualizar</button>
+            <div style="font-size: 0.9em; color: #666;">
+              <span id="contadorActividades">0 actividades</span>
+              <span id="totalConsumos" style="margin-left: 15px;"></span>
             </div>
           </div>
           
@@ -572,38 +589,23 @@ app.get('/tecnico', (req, res) => {
       
       <script>
         const API_URL = window.location.origin;
-        let estadoSeleccionado = '';
+        const hoy = "${getFechaHoy().fecha}";
         
-        // Cargar actividades al iniciar
-        cargarActividades();
-        
-        // Mostrar/ocultar selector de estado según sistema seleccionado
+        // Mostrar selector de estado cuando se selecciona equipo
         document.getElementById('equipo_critico').addEventListener('change', function() {
           const selector = document.getElementById('selectorEstado');
           if (this.value) {
             selector.style.display = 'block';
           } else {
             selector.style.display = 'none';
-            estadoSeleccionado = '';
             document.getElementById('nuevo_estado').value = '';
           }
         });
         
-        // Seleccionar estado
-        function seleccionarEstado(estado) {
-          estadoSeleccionado = estado;
-          document.getElementById('nuevo_estado').value = estado;
-          
-          // Remover selección anterior
-          document.querySelectorAll('.estado-btn').forEach(btn => {
-            btn.classList.remove('selected');
-          });
-          
-          // Marcar como seleccionado
-          document.querySelector(\`.estado-btn[data-estado="\${estado}"]\`).classList.add('selected');
-        }
+        // Cargar actividades al iniciar
+        cargarActividades();
         
-        // Formulario para agregar actividad
+        // Formulario
         document.getElementById('formActividad').addEventListener('submit', async (e) => {
           e.preventDefault();
           
@@ -614,8 +616,9 @@ app.get('/tecnico', (req, res) => {
             tipo_actividad: document.getElementById('tipo_actividad').value,
             equipo_critico: document.getElementById('equipo_critico').value,
             nuevo_estado: document.getElementById('nuevo_estado').value,
-            agua_consumida: document.getElementById('agua_consumida').value || null,
-            energia_consumida: document.getElementById('energia_consumida').value || null,
+            agua_m3: document.getElementById('agua_m3').value || null,
+            energia_kwh: document.getElementById('energia_kwh').value || null,
+            paneles_kwh: document.getElementById('paneles_kwh').value || null,
             observaciones: document.getElementById('observaciones').value
           };
           
@@ -632,11 +635,9 @@ app.get('/tecnico', (req, res) => {
               alert('✅ ' + data.message);
               document.getElementById('formActividad').reset();
               document.getElementById('selectorEstado').style.display = 'none';
-              document.getElementById('hora').value = new Date().toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit' });
-              estadoSeleccionado = '';
+              document.getElementById('hora').value = "${horaActual}";
+              document.getElementById('nuevo_estado').value = '';
               cargarActividades();
-            } else {
-              alert('❌ Error: ' + (data.error || 'No se pudo guardar'));
             }
           } catch (error) {
             alert('❌ Error de conexión');
@@ -651,29 +652,48 @@ app.get('/tecnico', (req, res) => {
             const actividades = await response.json();
             
             const lista = document.getElementById('listaActividades');
+            const contador = document.getElementById('contadorActividades');
+            
+            contador.textContent = \`\${actividades.length} actividades\`;
             
             if (actividades.length === 0) {
               lista.innerHTML = '<p style="text-align: center; color: #7f8c8d; padding: 40px;">No hay actividades registradas hoy</p>';
+              document.getElementById('totalConsumos').innerHTML = '';
               return;
             }
             
+            // Calcular totales
+            let totalAgua = 0, totalCFE = 0, totalPaneles = 0;
+            
             lista.innerHTML = actividades.map(a => {
-              let estadoClass = '';
-              let estadoBadge = '';
+              // Sumar consumos
+              if (a.agua_m3) totalAgua += a.agua_m3;
+              if (a.energia_kwh) totalCFE += a.energia_kwh;
+              if (a.paneles_kwh) totalPaneles += a.paneles_kwh;
               
+              // Determinar clase CSS
+              let clase = 'actividad-item';
+              if (a.agua_m3 || a.energia_kwh || a.paneles_kwh) clase += ' con-consumo';
+              if (a.nuevo_estado === 'rojo') clase += ' critico';
+              
+              // Crear badges de consumo
+              let badges = '';
+              if (a.agua_m3) badges += \`<span class="consumo-badge">💧 \${a.agua_m3} m³</span>\`;
+              if (a.energia_kwh) badges += \`<span class="consumo-badge">⚡ \${a.energia_kwh} kWh</span>\`;
+              if (a.paneles_kwh) badges += \`<span class="consumo-badge">☀️ \${a.paneles_kwh} kWh</span>\`;
+              
+              // Badge de estado
+              let estadoBadge = '';
               if (a.nuevo_estado === 'verde') {
-                estadoClass = 'estado-verde';
-                estadoBadge = '<span class="badge badge-verde">🟢 OPERATIVO</span>';
+                estadoBadge = '<span class="estado-badge badge-verde">🟢 OPERATIVO</span>';
               } else if (a.nuevo_estado === 'amarillo') {
-                estadoClass = 'estado-amarillo';
-                estadoBadge = '<span class="badge badge-amarillo">🟡 ATENCIÓN</span>';
+                estadoBadge = '<span class="estado-badge badge-amarillo">🟡 ATENCIÓN</span>';
               } else if (a.nuevo_estado === 'rojo') {
-                estadoClass = 'estado-rojo';
-                estadoBadge = '<span class="badge badge-rojo">🔴 CRÍTICO</span>';
+                estadoBadge = '<span class="estado-badge badge-rojo">🔴 CRÍTICO</span>';
               }
               
               return \`
-                <div class="actividad-item \${estadoClass}">
+                <div class="\${clase}">
                   <div>
                     <span style="background: #e9ecef; padding: 3px 8px; border-radius: 12px; font-size: 0.9em; color: #7f8c8d;">
                       \${a.hora}
@@ -684,11 +704,23 @@ app.get('/tecnico', (req, res) => {
                   </div>
                   <div style="margin-top: 8px; color: #5a6268;">
                     📍 \${a.ubicacion} • \${a.tipo_actividad}
+                    \${badges}
                   </div>
                   \${a.observaciones ? '<div style="margin-top: 8px; font-style: italic; color: #6c757d;">' + a.observaciones + '</div>' : ''}
                 </div>
               \`;
             }).join('');
+            
+            // Mostrar resumen de consumos
+            const resumenHTML = [];
+            if (totalAgua > 0) resumenHTML.push(\`💧 \${totalAgua.toFixed(3)} m³\`);
+            if (totalCFE > 0) resumenHTML.push(\`⚡ \${totalCFE.toFixed(1)} kWh\`);
+            if (totalPaneles > 0) resumenHTML.push(\`☀️ \${totalPaneles.toFixed(1)} kWh\`);
+            
+            if (resumenHTML.length > 0) {
+              document.getElementById('totalConsumos').innerHTML = resumenHTML.join(' • ');
+            }
+            
           } catch (error) {
             console.error('Error cargando actividades:', error);
             document.getElementById('listaActividades').innerHTML = 
@@ -696,7 +728,12 @@ app.get('/tecnico', (req, res) => {
           }
         }
         
-        // Auto-refresh cada 2 minutos
+        // Exportar a Excel
+        function exportarExcel() {
+          window.open(API_URL + '/api/exportar/excel/' + hoy, '_blank');
+        }
+        
+        // Auto-refresh
         setInterval(cargarActividades, 120000);
       </script>
     </body>
@@ -704,8 +741,10 @@ app.get('/tecnico', (req, res) => {
   `);
 });
 
-// DASHBOARD GERENCIA (SOLO LECTURA)
+// DASHBOARD GERENCIA CON CONSUMOS
 app.get('/gerencia', (req, res) => {
+  const { fechaLegible } = getFechaHoy();
+  
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -727,46 +766,42 @@ app.get('/gerencia', (req, res) => {
           box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         }
         
-        .stats-overview {
+        .consumo-dashboard {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
           gap: 20px;
           margin-bottom: 30px;
         }
         
-        .stat-card {
+        .consumo-card {
           background: white;
-          padding: 20px;
+          padding: 25px;
           border-radius: 10px;
           text-align: center;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
         }
         
-        .stat-value {
+        .consumo-icon {
           font-size: 2.5em;
+          margin-bottom: 15px;
+        }
+        
+        .consumo-valor {
+          font-size: 2.2em;
           font-weight: bold;
           margin: 10px 0;
         }
         
-        .categorias-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-          gap: 20px;
-          margin-bottom: 30px;
+        .consumo-unidad {
+          color: #666;
+          font-size: 0.9em;
         }
         
-        .categoria-card {
-          background: white;
-          padding: 25px;
-          border-radius: 10px;
-          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
-        }
-        
-        .sistemas-grid {
+        .semaforo-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
           gap: 20px;
-          margin-bottom: 30px;
+          margin: 30px 0;
         }
         
         .sistema-card {
@@ -780,19 +815,6 @@ app.get('/gerencia', (req, res) => {
         .sistema-card.verde { border-color: #27ae60; }
         .sistema-card.amarillo { border-color: #f39c12; }
         .sistema-card.rojo { border-color: #e74c3c; }
-        
-        .estado-badge {
-          display: inline-block;
-          padding: 4px 12px;
-          border-radius: 20px;
-          font-size: 0.85em;
-          font-weight: 600;
-          margin-top: 10px;
-        }
-        
-        .badge-verde { background: #d5f4e6; color: #27ae60; }
-        .badge-amarillo { background: #fff3cd; color: #856404; }
-        .badge-rojo { background: #f8d7da; color: #721c24; }
         
         .btn {
           background: #2980b9;
@@ -813,13 +835,28 @@ app.get('/gerencia', (req, res) => {
         .btn-descargar { background: #27ae60; }
         .btn-descargar:hover { background: #219653; }
         
-        .cambios-recientes {
-          background: white;
-          padding: 25px;
-          border-radius: 10px;
-          margin-top: 30px;
-          box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+        .actividad-item {
+          padding: 15px;
+          border-bottom: 1px solid #eee;
+          display: flex;
+          justify-content: space-between;
         }
+        
+        .badge {
+          display: inline-block;
+          padding: 4px 12px;
+          border-radius: 20px;
+          font-size: 0.85em;
+          font-weight: 600;
+          margin-left: 10px;
+        }
+        
+        .badge-verde { background: #d5f4e6; color: #27ae60; }
+        .badge-amarillo { background: #fff3cd; color: #856404; }
+        .badge-rojo { background: #f8d7da; color: #721c24; }
+        
+        .balance-positivo { color: #e74c3c; }
+        .balance-negativo { color: #27ae60; }
       </style>
     </head>
     <body>
@@ -827,57 +864,76 @@ app.get('/gerencia', (req, res) => {
         <!-- HEADER -->
         <div class="header">
           <h1>🏢 Dashboard Gerencia - Torre K</h1>
-          <p>Estado de sistemas críticos en tiempo real • ${new Date().toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          <p>${fechaLegible}</p>
+          <p style="margin-top: 10px; font-size: 0.9em; opacity: 0.9;">
+            Monitoreo de sistemas críticos y consumos diarios
+          </p>
           <div style="margin-top: 20px;">
             <button onclick="cargarDashboard()" class="btn">🔄 Actualizar</button>
-            <button onclick="descargarReporte()" class="btn btn-descargar">📥 Descargar Reporte</button>
+            <button onclick="exportarExcel()" class="btn btn-descargar">📥 Exportar Hoy a Excel</button>
             <a href="/tecnico" target="_blank" class="btn">👷 Ver Bitácora Técnica</a>
           </div>
         </div>
         
-        <!-- ESTADÍSTICAS GENERALES -->
-        <h2 style="color: #2c3e50; margin-bottom: 15px;">📊 Resumen General</h2>
-        <div class="stats-overview">
-          <div class="stat-card">
-            <div>🟢 Operativos</div>
-            <div class="stat-value" id="totalVerdes">0</div>
-            <div>sistemas</div>
+        <!-- PANEL DE CONSUMOS -->
+        <h2 style="color: #2c3e50; margin-bottom: 15px;">📊 Consumos del Día</h2>
+        <div class="consumo-dashboard">
+          <div class="consumo-card">
+            <div class="consumo-icon">💧</div>
+            <div class="consumo-valor" id="totalAgua">0.000</div>
+            <div class="consumo-unidad">metros cúbicos (m³)</div>
+            <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+              Consumo de agua
+            </div>
           </div>
           
-          <div class="stat-card">
-            <div>🟡 En Atención</div>
-            <div class="stat-value" id="totalAmarillos">0</div>
-            <div>sistemas</div>
+          <div class="consumo-card">
+            <div class="consumo-icon">⚡</div>
+            <div class="consumo-valor" id="totalCFE">0.0</div>
+            <div class="consumo-unidad">kilowatt-hora (kWh)</div>
+            <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+              Consumo de CFE
+            </div>
           </div>
           
-          <div class="stat-card">
-            <div>🔴 Críticos</div>
-            <div class="stat-value" id="totalRojos">0</div>
-            <div>sistemas</div>
+          <div class="consumo-card">
+            <div class="consumo-icon">☀️</div>
+            <div class="consumo-valor" id="totalPaneles">0.0</div>
+            <div class="consumo-unidad">kilowatt-hora (kWh)</div>
+            <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+              Generación paneles
+            </div>
           </div>
           
-          <div class="stat-card">
-            <div>📋 Total Sistemas</div>
-            <div class="stat-value" id="totalSistemas">0</div>
-            <div>monitoreados</div>
+          <div class="consumo-card">
+            <div class="consumo-icon">⚖️</div>
+            <div class="consumo-valor" id="balanceEnergia">0.0</div>
+            <div class="consumo-unidad">kilowatt-hora (kWh)</div>
+            <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+              <span id="balanceTexto">Balance energético</span>
+            </div>
           </div>
         </div>
         
-        <!-- SISTEMAS POR CATEGORÍA -->
-        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">📂 Sistemas por Categoría</h2>
-        <div class="categorias-grid" id="categoriasGrid"></div>
-        
-        <!-- TODOS LOS SISTEMAS CRÍTICOS -->
-        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">🚦 Semáforo de Todos los Sistemas</h2>
-        <div class="sistemas-grid" id="sistemasGrid">
+        <!-- SEMÁFORO DE SISTEMAS -->
+        <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">🚦 Estado de Sistemas Críticos</h2>
+        <div class="semaforo-grid" id="semaforoGrid">
           <p>Cargando sistemas...</p>
         </div>
         
-        <!-- CAMBIOS RECIENTES -->
-        <div class="cambios-recientes">
-          <h2 style="color: #2c3e50; margin-bottom: 20px;">📝 Cambios Recientes de Estado</h2>
-          <div id="cambiosRecientes">
-            <p>Cargando cambios...</p>
+        <!-- ACTIVIDADES RECIENTES -->
+        <div style="background: white; padding: 25px; border-radius: 10px; margin-top: 30px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="color: #2c3e50;">📝 Actividades Recientes</h2>
+            <div id="contadorSistemas" style="color: #666; font-size: 0.9em;">
+              <span id="contadorVerdes">0</span>🟢 • 
+              <span id="contadorAmarillos">0</span>🟡 • 
+              <span id="contadorRojos">0</span>🔴
+            </div>
+          </div>
+          
+          <div id="actividadesRecientes">
+            <p>Cargando actividades...</p>
           </div>
         </div>
       </div>
@@ -885,7 +941,6 @@ app.get('/gerencia', (req, res) => {
       <script>
         const API_URL = window.location.origin;
         
-        // Cargar dashboard
         cargarDashboard();
         
         async function cargarDashboard() {
@@ -893,89 +948,87 @@ app.get('/gerencia', (req, res) => {
             const response = await fetch(API_URL + '/api/dashboard/gerencia');
             const data = await response.json();
             
-            // Actualizar estadísticas generales
-            document.getElementById('totalVerdes').textContent = data.semaforo_total.verdes;
-            document.getElementById('totalAmarillos').textContent = data.semaforo_total.amarillos;
-            document.getElementById('totalRojos').textContent = data.semaforo_total.rojos;
-            document.getElementById('totalSistemas').textContent = data.semaforo_total.total;
+            // Actualizar consumos
+            document.getElementById('totalAgua').textContent = data.consumos_dia.agua_m3.toFixed(3);
+            document.getElementById('totalCFE').textContent = data.consumos_dia.cfe_kwh.toFixed(1);
+            document.getElementById('totalPaneles').textContent = data.consumos_dia.paneles_kwh.toFixed(1);
             
-            // Mostrar categorías
-            const categoriasGrid = document.getElementById('categoriasGrid');
-            categoriasGrid.innerHTML = data.resumen_categorias.map(cat => \`
-              <div class="categoria-card">
-                <h3>\${cat.categoria.toUpperCase()}</h3>
-                <div style="margin: 15px 0;">
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🟢 Operativos:</span>
-                    <strong>\${cat.verdes || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🟡 Atención:</span>
-                    <strong>\${cat.amarillos || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0;">
-                    <span>🔴 Críticos:</span>
-                    <strong>\${cat.rojos || 0}</strong>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; margin: 5px 0; border-top: 1px solid #eee; padding-top: 8px;">
-                    <span>📊 Total:</span>
-                    <strong>\${cat.total || 0}</strong>
-                  </div>
-                </div>
-              </div>
-            \`).join('');
+            const balance = data.consumos_dia.energia_neta;
+            const balanceElem = document.getElementById('balanceEnergia');
+            const balanceTexto = document.getElementById('balanceTexto');
             
-            // Mostrar todos los sistemas
-            const sistemasGrid = document.getElementById('sistemasGrid');
-            sistemasGrid.innerHTML = data.sistemas_criticos.map(s => \`
-              <div class="sistema-card \${s.estado}">
-                <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">
-                  \${s.categoria}
-                </div>
-                <h3 style="margin: 0 0 10px 0;">\${s.nombre}</h3>
-                <p style="color: #666; margin: 5px 0; font-size: 0.9em;">
-                  📍 \${s.ubicacion}
-                </p>
-                <div class="estado-badge badge-\${s.estado}">
-                  \${s.estado_texto}
-                </div>
-                <p style="font-size: 0.85em; color: #999; margin-top: 10px;">
-                  Última actividad:<br>
-                  \${s.ultima_actividad || 'Sin registro'}
-                </p>
-              </div>
-            \`).join('');
-            
-            // Mostrar cambios recientes
-            const cambiosDiv = document.getElementById('cambiosRecientes');
-            if (data.cambios_recientes.length === 0) {
-              cambiosDiv.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">No hay cambios recientes</p>';
+            balanceElem.textContent = Math.abs(balance).toFixed(1);
+            if (balance > 0) {
+              balanceElem.className = 'consumo-valor balance-positivo';
+              balanceTexto.innerHTML = '<span style="color: #e74c3c;">CONSUMO NETO</span>';
             } else {
-              cambiosDiv.innerHTML = data.cambios_recientes.map(c => {
+              balanceElem.className = 'consumo-valor balance-negativo';
+              balanceTexto.innerHTML = '<span style="color: #27ae60;">GENERACIÓN NETO</span>';
+            }
+            
+            // Actualizar semáforo
+            const semaforoGrid = document.getElementById('semaforoGrid');
+            semaforoGrid.innerHTML = data.equipos_criticos.map(e => {
+              let icono = '🟢';
+              if (e.estado === 'amarillo') icono = '🟡';
+              if (e.estado === 'rojo') icono = '🔴';
+              
+              return \`
+                <div class="sistema-card \${e.estado}">
+                  <div style="font-size: 2em; margin-bottom: 10px;">
+                    \${icono}
+                  </div>
+                  <h3 style="margin: 0 0 10px 0;">\${e.equipo}</h3>
+                  <div style="color: #666; font-size: 0.9em; margin-bottom: 10px;">
+                    \${e.ultimo_cambio ? 'Último cambio: ' + e.ultimo_cambio.split(' ')[0] : 'Sin cambios'}
+                  </div>
+                  <span class="badge badge-\${e.estado}">
+                    \${e.estado === 'verde' ? 'OPERATIVO' : e.estado === 'amarillo' ? 'ATENCIÓN' : 'CRÍTICO'}
+                  </span>
+                </div>
+              \`;
+            }).join('');
+            
+            // Actualizar contadores
+            document.getElementById('contadorVerdes').textContent = data.semaforo.verdes;
+            document.getElementById('contadorAmarillos').textContent = data.semaforo.amarillos;
+            document.getElementById('contadorRojos').textContent = data.semaforo.rojos;
+            
+            // Mostrar actividades
+            const actividadesDiv = document.getElementById('actividadesRecientes');
+            if (data.actividades_hoy.length === 0) {
+              actividadesDiv.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">No hay actividades hoy</p>';
+            } else {
+              actividadesDiv.innerHTML = data.actividades_hoy.map(a => {
+                let consumos = '';
+                if (a.agua_m3) consumos += \`💧 \${a.agua_m3} m³ \`;
+                if (a.energia_kwh) consumos += \`⚡ \${a.energia_kwh} kWh \`;
+                if (a.paneles_kwh) consumos += \`☀️ \${a.paneles_kwh} kWh\`;
+                
                 let estadoBadge = '';
-                if (c.nuevo_estado === 'verde') {
-                  estadoBadge = '<span class="badge-verde" style="margin-left: 10px;">🟢 OPERATIVO</span>';
-                } else if (c.nuevo_estado === 'amarillo') {
-                  estadoBadge = '<span class="badge-amarillo" style="margin-left: 10px;">🟡 ATENCIÓN</span>';
-                } else if (c.nuevo_estado === 'rojo') {
-                  estadoBadge = '<span class="badge-rojo" style="margin-left: 10px;">🔴 CRÍTICO</span>';
+                if (a.nuevo_estado === 'verde') {
+                  estadoBadge = '<span class="badge badge-verde">🟢</span>';
+                } else if (a.nuevo_estado === 'amarillo') {
+                  estadoBadge = '<span class="badge badge-amarillo">🟡</span>';
+                } else if (a.nuevo_estado === 'rojo') {
+                  estadoBadge = '<span class="badge badge-rojo">🔴</span>';
                 }
                 
                 return \`
-                  <div style="padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between;">
+                  <div class="actividad-item">
                     <div style="flex: 1;">
                       <div>
-                        <strong>\${c.actividad}</strong>
-                        \${c.equipo_critico ? '<span style="background: #e9ecef; padding: 3px 8px; border-radius: 12px; font-size: 0.85em; margin-left: 10px;">' + c.equipo_critico + '</span>' : ''}
+                        <strong>\${a.actividad}</strong>
                         \${estadoBadge}
                       </div>
                       <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
-                        📍 \${c.ubicacion} • \${c.hora} • \${c.fecha}
+                        📍 \${a.ubicacion} • \${a.hora}
+                        \${consumos ? '• ' + consumos : ''}
                       </div>
-                      \${c.observaciones ? '<div style="color: #666; font-size: 0.9em; margin-top: 5px; font-style: italic;">' + c.observaciones + '</div>' : ''}
+                      \${a.observaciones ? '<div style="color: #666; font-size: 0.9em; margin-top: 5px; font-style: italic;">' + a.observaciones + '</div>' : ''}
                     </div>
-                    <div style="color: #999; font-size: 0.9em; min-width: 100px; text-align: right;">
-                      \${c.tecnico}
+                    <div style="color: #999; font-size: 0.9em; min-width: 120px; text-align: right;">
+                      \${a.equipo_critico || 'General'}
                     </div>
                   </div>
                 \`;
@@ -983,16 +1036,17 @@ app.get('/gerencia', (req, res) => {
             }
             
           } catch (error) {
-            console.error('Error cargando dashboard:', error);
-            alert('Error cargando datos del dashboard');
+            console.error('Error:', error);
+            alert('Error cargando dashboard');
           }
         }
         
-        function descargarReporte() {
-          window.open(API_URL + '/api/descargar/reporte', '_blank');
+        function exportarExcel() {
+          const hoy = "${getFechaHoy().fecha}";
+          window.open(API_URL + '/api/exportar/excel/' + hoy, '_blank');
         }
         
-        // Auto-refresh cada 3 minutos
+        // Auto-refresh
         setInterval(cargarDashboard, 180000);
       </script>
     </body>
@@ -1002,12 +1056,13 @@ app.get('/gerencia', (req, res) => {
 
 // PÁGINA PRINCIPAL
 app.get('/', (req, res) => {
+  const { fechaLegible } = getFechaHoy();
+  
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Sistema de Mantenimiento - Torre K</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Torre K Maintenance</title>
       <style>
         body { 
           font-family: 'Segoe UI', system-ui, sans-serif; 
@@ -1036,7 +1091,7 @@ app.get('/', (req, res) => {
           font-size: 2.5em;
         }
         
-        .subtitle {
+        .fecha {
           color: #7f8c8d;
           margin-bottom: 30px;
           font-size: 1.1em;
@@ -1047,7 +1102,7 @@ app.get('/', (req, res) => {
           border-radius: 15px;
           padding: 30px;
           margin: 20px 0;
-          transition: transform 0.3s, box-shadow 0.3s;
+          transition: transform 0.3s;
           cursor: pointer;
           border: 2px solid transparent;
           text-decoration: none;
@@ -1057,34 +1112,23 @@ app.get('/', (req, res) => {
         
         .card:hover {
           transform: translateY(-5px);
-          box-shadow: 0 10px 30px rgba(0,0,0,0.1);
           border-color: #3498db;
         }
         
         .card.tecnico { border-left: 5px solid #27ae60; }
         .card.gerencia { border-left: 5px solid #2980b9; }
         
-        .sistemas-criticos {
+        .info-box {
           margin: 30px 0;
           padding: 20px;
-          background: #fff3cd;
+          background: #e8f4fd;
           border-radius: 10px;
-          border-left: 4px solid #f39c12;
           text-align: left;
         }
         
-        .sistemas-criticos h3 {
-          margin-top: 0;
-          color: #856404;
-        }
-        
-        .sistemas-list {
-          font-size: 0.9em;
-          columns: 2;
-        }
-        
-        .sistemas-list li {
-          margin-bottom: 5px;
+        .info-box ul {
+          margin: 10px 0;
+          padding-left: 20px;
         }
         
         .rule {
@@ -1093,59 +1137,54 @@ app.get('/', (req, res) => {
           background: #d5f4e6;
           border-radius: 10px;
           border-left: 4px solid #27ae60;
-          font-style: italic;
         }
       </style>
     </head>
     <body>
       <div class="container">
         <h1>🏢 Torre K Maintenance</h1>
-        <div class="subtitle">
-          Sistema de mantenimiento integral • ${new Date().toLocaleDateString('es-MX')}
-        </div>
+        <div class="fecha">${fechaLegible}</div>
         
         <div class="rule">
-          <strong>📋 Regla fundamental:</strong><br>
-          "Sin registro, no se hizo"
+          <strong>📋 Sistema simple y práctico:</strong><br>
+          1. Técnico registra actividades y consumos<br>
+          2. Estados se guardan hasta que los cambies<br>
+          3. Exporta a Excel diario para tu historial
         </div>
         
         <a href="/tecnico" class="card tecnico">
-          <h2>👷 Área Técnica</h2>
-          <p>Registro de actividades y cambios de estado</p>
-          <p style="font-size: 0.9em; color: #666;">
-            • Reportar fallas y actividades<br>
-            • Cambiar estado de sistemas (verde/amarillo/rojo)<br>
-            • Registrar consumo de agua/energía
-          </p>
+          <h2>👷 Bitácora Técnica</h2>
+          <p>Registro diario completo</p>
+          <ul>
+            <li>📝 Actividades con ubicación y hora</li>
+            <li>💧⚡ Registro de consumos (agua, CFE, paneles)</li>
+            <li>🚦 Cambio de estado de sistemas</li>
+            <li>📥 Exportar a Excel con un clic</li>
+          </ul>
         </a>
         
         <a href="/gerencia" class="card gerencia">
           <h2>👔 Dashboard Gerencia</h2>
-          <p>Monitoreo de todos los sistemas críticos</p>
-          <p style="font-size: 0.9em; color: #666;">
-            • Ver semáforo de estado completo<br>
-            • Revisar cambios recientes<br>
-            • Descargar reportes en Excel
-          </p>
+          <p>Monitoreo en tiempo real</p>
+          <ul>
+            <li>📊 Consumos diarios de agua y energía</li>
+            <li>🚦 Semáforo de todos los sistemas</li>
+            <li>📝 Historial de actividades</li>
+            <li>📥 Reportes listos para Excel</li>
+          </ul>
         </a>
         
-        <div class="sistemas-criticos">
-          <h3>⚠️ Sistemas Críticos Monitoreados:</h3>
-          <ul class="sistemas-list">
-            <li>💧 Cisterna de Agua</li>
-            <li>⚡ Sistema Eléctrico</li>
-            <li>🚪 Elevador Mitsubishi</li>
-            <li>🛡️ Bomba Contra Incendio</li>
-            <li>💰 Software de Tickets</li>
-            <li>🔋 Planta de Emergencia</li>
-            <li>☀️ Paneles Solares</li>
-            <li>🔄 Rampa Hidráulica</li>
-          </ul>
-        </div>
-        
-        <div style="margin-top: 20px; color: #7f8c8d; font-size: 0.85em;">
-          <p>Sistema integral para mantenimiento de Torre K</p>
-          <p><strong>Recordatorio:</strong> El técnico cambia estados, gerencia solo monitorea.</p>
+        <div class="info-box">
+          <strong>💡 Flujo de trabajo recomendado:</strong>
+          <ol>
+            <li>Técnico registra actividades durante el día</li>
+            <li>Al final del día, exporta a Excel</li>
+            <li>Pega el Excel en tu hoja mensual</li>
+            <li>Gerencia revisa dashboard en tiempo real</li>
+          </ol>
+          <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+            <strong>Nota:</strong> Los datos se guardan permanentemente en la base de datos.
+          </p>
         </div>
       </div>
     </body>
@@ -1156,11 +1195,9 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n=========================================`);
-  console.log(`🚀 Sistema de Mantenimiento Torre K`);
-  console.log(`📅 ${new Date().toLocaleString('es-MX')}`);
-  console.log(`🌐 URL Principal: http://localhost:${PORT}`);
-  console.log(`👷 Técnico (cambia estados): http://localhost:${PORT}/tecnico`);
-  console.log(`👔 Gerencia (solo lectura): http://localhost:${PORT}/gerencia`);
+  console.log(`🏢 Sistema Torre K - ${getFechaHoy().fechaLegible}`);
+  console.log(`🌐 Principal: http://localhost:${PORT}`);
+  console.log(`👷 Técnico: http://localhost:${PORT}/tecnico`);
+  console.log(`👔 Gerencia: http://localhost:${PORT}/gerencia`);
   console.log(`=========================================\n`);
 });
-   
