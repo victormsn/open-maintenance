@@ -9,9 +9,9 @@ app.use(express.json());
 // Base de datos SQLite
 const db = new sqlite3.Database('/tmp/database.sqlite');
 
-// ==================== CREAR TABLAS (MODIFICADA) ====================
+// ==================== CREAR TABLAS (SOLO CAMBIO DE NOMBRES) ====================
 db.serialize(() => {
-  // Tabla principal MODIFICADA: sin paneles, campos CFE mejorados
+  // Tabla principal (solo cambio de nombres de campos)
   db.run(`
     CREATE TABLE IF NOT EXISTS actividades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,10 +20,10 @@ db.serialize(() => {
       actividad TEXT NOT NULL,
       tipo_actividad TEXT,
       
-      -- CONSUMOS MODIFICADOS (SIN PANELES, CON CAMPOS CFE)
+      -- CONSUMOS (MANTENEMOS PANELES, SOLO CAMBIO DE NOMBRES)
       agua_m3 REAL,               -- metros cúbicos de agua
-      energia_consumida REAL,     -- Energy Consumed (+) CFE
-      energia_devuelta REAL,      -- Energy Returned (-) CFE
+      energia_consumida REAL,     -- Energy Consumed (+) (antes CFE)
+      paneles_kwh REAL,           -- Energy Returned (-) (antes Paneles)
       
       -- Sistemas críticos
       equipo_critico TEXT,
@@ -35,7 +35,7 @@ db.serialize(() => {
     )
   `);
 
-  // Tabla de ESTADOS ACTUALES de equipos
+  // Tabla de ESTADOS ACTUALES de equipos (CON PANELES SOLARES)
   db.run(`
     CREATE TABLE IF NOT EXISTS estados_equipos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +47,7 @@ db.serialize(() => {
     )
   `);
 
-  // Insertar equipos críticos iniciales (sin paneles solares)
+  // Insertar equipos críticos iniciales (CON PANELES SOLARES)
   const equiposCriticos = [
     'Cisterna de Agua',
     'Tanque Elevado', 
@@ -58,6 +58,7 @@ db.serialize(() => {
     'Planta de Emergencia',
     'Software de Tickets Estacionamiento',
     'Barrera Estacionamiento',
+    'Paneles Solares',            // ¡MANTENIDO!
     'Rampa Hidráulica',
     'Sistema de Gas'
   ];
@@ -87,9 +88,9 @@ function getFechaHoy() {
   return { fecha, fechaLegible };
 }
 
-// ==================== ENDPOINTS (MODIFICADOS) ====================
+// ==================== ENDPOINTS (SOLO CAMBIO DE NOMBRES) ====================
 
-// 1. REGISTRAR ACTIVIDAD (SIN HORA MANUAL)
+// 1. REGISTRAR ACTIVIDAD
 app.post('/api/actividad', (req, res) => {
   const { fecha, fechaLegible } = getFechaHoy();
   
@@ -100,8 +101,8 @@ app.post('/api/actividad', (req, res) => {
     equipo_critico = '',
     nuevo_estado = '',
     agua_m3,
-    energia_consumida,    // Energy Consumed (+) CFE
-    energia_devuelta,     // Energy Returned (-) CFE
+    energia_consumida,    // Energy Consumed (+) (antes CFE)
+    paneles_kwh,         // Energy Returned (-) (antes Paneles)
     observaciones = ''
   } = req.body;
 
@@ -112,10 +113,10 @@ app.post('/api/actividad', (req, res) => {
   db.run(`
     INSERT INTO actividades 
     (fecha, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
-     agua_m3, energia_consumida, energia_devuelta, observaciones)
+     agua_m3, energia_consumida, paneles_kwh, observaciones)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [fecha, ubicacion, actividad, tipo_actividad, equipo_critico, nuevo_estado, 
-     agua_m3 || null, energia_consumida || null, energia_devuelta || null, observaciones],
+     agua_m3 || null, energia_consumida || null, paneles_kwh || null, observaciones],
     function(err) {
       if (err) {
         console.error('Error:', err);
@@ -143,7 +144,7 @@ app.post('/api/actividad', (req, res) => {
   );
 });
 
-// ENDPOINT FALTANTE: OBTENER ACTIVIDADES DE HOY (para la interfaz)
+// ENDPOINT: OBTENER ACTIVIDADES DE HOY
 app.get('/api/actividades/hoy', (req, res) => {
   const { fecha } = getFechaHoy();
   
@@ -159,7 +160,7 @@ app.get('/api/actividades/hoy', (req, res) => {
   );
 });
 
-// 2. DASHBOARD GERENCIA CON CONSUMOS (MODIFICADO)
+// 2. DASHBOARD GERENCIA (SOLO CAMBIO DE NOMBRES)
 app.get('/api/dashboard/gerencia', (req, res) => {
   const { fecha, fechaLegible } = getFechaHoy();
   
@@ -175,14 +176,14 @@ app.get('/api/dashboard/gerencia', (req, res) => {
         `SELECT 
            SUM(COALESCE(agua_m3, 0)) as agua_total,
            SUM(COALESCE(energia_consumida, 0)) as consumo_total,
-           SUM(COALESCE(energia_devuelta, 0)) as devuelto_total
+           SUM(COALESCE(paneles_kwh, 0)) as paneles_total
          FROM actividades 
          WHERE fecha = ?`,
         [fecha],
         (err, consumos) => {
           if (err) return res.status(500).json({ error: err.message });
 
-          // 3. Obtener actividades de hoy (con consumos)
+          // 3. Obtener actividades de hoy
           db.all(
             `SELECT * FROM actividades 
              WHERE fecha = ? 
@@ -192,8 +193,8 @@ app.get('/api/dashboard/gerencia', (req, res) => {
             (err, actividades) => {
               if (err) return res.status(500).json({ error: err.message });
 
-              // 4. Calcular energía neta
-              const energia_neta = (consumos.consumo_total || 0) - (consumos.devuelto_total || 0);
+              // 4. Calcular energía neta (CONSUMO - PANELES)
+              const energia_neta = (consumos.consumo_total || 0) - (consumos.paneles_total || 0);
               
               res.json({
                 fecha: fecha,
@@ -202,7 +203,7 @@ app.get('/api/dashboard/gerencia', (req, res) => {
                 consumos_dia: {
                   agua_m3: consumos.agua_total || 0,
                   energia_consumida: consumos.consumo_total || 0,
-                  energia_devuelta: consumos.devuelto_total || 0,
+                  paneles_kwh: consumos.paneles_total || 0,
                   energia_neta: energia_neta,
                   balance: energia_neta > 0 ? 'CONSUMO NETO' : 'DEVOLUCIÓN NETO'
                 },
@@ -222,7 +223,7 @@ app.get('/api/dashboard/gerencia', (req, res) => {
   );
 });
 
-// 3. EXPORTAR EXCEL (MODIFICADO)
+// 3. EXPORTAR EXCEL (SOLO CAMBIO DE NOMBRES)
 app.get('/api/exportar/excel/:fecha?', (req, res) => {
   const fechaExportar = req.params.fecha || getFechaHoy().fecha;
   
@@ -234,33 +235,32 @@ app.get('/api/exportar/excel/:fecha?', (req, res) => {
     (err, actividades) => {
       if (err) return res.status(500).json({ error: err.message });
 
-      // Crear CSV optimizado para Excel
       let csv = '';
       
-      // ENCABEZADOS (primera fila)
+      // ENCABEZADOS (con nuevos nombres)
       csv += 'Fecha,Ubicación,Actividad,Tipo,Equipo Crítico,Nuevo Estado,Agua (m³),Energy Consumed (+),Energy Returned (-),Observaciones,Técnico\n';
       
       // DATOS
       actividades.forEach(a => {
         csv += `"${a.fecha}","${a.ubicacion}","${a.actividad}","${a.tipo_actividad}",`;
         csv += `"${a.equipo_critico || ''}","${a.nuevo_estado || ''}",`;
-        csv += `"${a.agua_m3 || ''}","${a.energia_consumida || ''}","${a.energia_devuelta || ''}",`;
+        csv += `"${a.agua_m3 || ''}","${a.energia_consumida || ''}","${a.paneles_kwh || ''}",`;
         csv += `"${(a.observaciones || '').replace(/"/g, '""')}","${a.tecnico}"\n`;
       });
       
-      // RESUMEN DEL DÍA (filas adicionales)
+      // RESUMEN DEL DÍA
       csv += '\n';
       csv += 'RESUMEN DEL DÍA,,,,\n';
       
       // Calcular totales
       const aguaTotal = actividades.reduce((sum, a) => sum + (a.agua_m3 || 0), 0);
       const consumoTotal = actividades.reduce((sum, a) => sum + (a.energia_consumida || 0), 0);
-      const devueltoTotal = actividades.reduce((sum, a) => sum + (a.energia_devuelta || 0), 0);
-      const energiaNeta = consumoTotal - devueltoTotal;
+      const panelesTotal = actividades.reduce((sum, a) => sum + (a.paneles_kwh || 0), 0);
+      const energiaNeta = consumoTotal - panelesTotal;
       
       csv += `Total Agua: ${aguaTotal.toFixed(3)} m³\n`;
       csv += `Total Energy Consumed (+): ${consumoTotal.toFixed(2)} kWh\n`;
-      csv += `Total Energy Returned (-): ${devueltoTotal.toFixed(2)} kWh\n`;
+      csv += `Total Energy Returned (-): ${panelesTotal.toFixed(2)} kWh\n`;
       csv += `Neto CFE: ${energiaNeta.toFixed(2)} kWh (${energiaNeta > 0 ? 'CONSUMO' : 'DEVOLUCIÓN'})\n`;
       csv += `Total Actividades: ${actividades.length}\n`;
       
@@ -271,7 +271,7 @@ app.get('/api/exportar/excel/:fecha?', (req, res) => {
   );
 });
 
-// 4. EDITAR ACTIVIDAD (NUEVO)
+// 4. EDITAR ACTIVIDAD
 app.put('/api/actividad/:id', (req, res) => {
   const { id } = req.params;
   const {
@@ -280,18 +280,18 @@ app.put('/api/actividad/:id', (req, res) => {
     tipo_actividad,
     agua_m3,
     energia_consumida,
-    energia_devuelta,
+    paneles_kwh,
     observaciones
   } = req.body;
 
   db.run(`
     UPDATE actividades 
     SET ubicacion = ?, actividad = ?, tipo_actividad = ?,
-        agua_m3 = ?, energia_consumida = ?, energia_devuelta = ?,
+        agua_m3 = ?, energia_consumida = ?, paneles_kwh = ?,
         observaciones = ?
     WHERE id = ?`,
     [ubicacion, actividad, tipo_actividad,
-     agua_m3 || null, energia_consumida || null, energia_devuelta || null,
+     agua_m3 || null, energia_consumida || null, paneles_kwh || null,
      observaciones || '', id],
     function(err) {
       if (err) {
@@ -308,7 +308,7 @@ app.put('/api/actividad/:id', (req, res) => {
   );
 });
 
-// 5. BORRAR ACTIVIDAD (NUEVO)
+// 5. BORRAR ACTIVIDAD
 app.delete('/api/actividad/:id', (req, res) => {
   const { id } = req.params;
 
@@ -330,7 +330,7 @@ app.delete('/api/actividad/:id', (req, res) => {
   );
 });
 
-// 6. OBTENER UNA ACTIVIDAD (NUEVO)
+// 6. OBTENER UNA ACTIVIDAD
 app.get('/api/actividad/:id', (req, res) => {
   db.get(
     `SELECT * FROM actividades WHERE id = ?`,
@@ -343,7 +343,7 @@ app.get('/api/actividad/:id', (req, res) => {
   );
 });
 
-// ==================== INTERFAZ TÉCNICO (MODIFICADA - SIN HORA, CAMPOS CFE) ====================
+// ==================== INTERFAZ TÉCNICO (SOLO CAMBIO DE NOMBRES) ====================
 
 app.get('/tecnico', (req, res) => {
   const { fechaLegible } = getFechaHoy();
@@ -442,7 +442,7 @@ app.get('/tecnico', (req, res) => {
         .btn-descargar { background: #2980b9; }
         .btn-descargar:hover { background: #1c6ea4; }
         
-        /* BOTONES NUEVOS PARA EDITAR/BORRAR */
+        /* BOTONES PARA EDITAR/BORRAR */
         .btn-editar {
           background: #f39c12;
           color: white;
@@ -564,7 +564,7 @@ app.get('/tecnico', (req, res) => {
           </p>
         </div>
         
-        <!-- FORMULARIO PRINCIPAL (SIN HORA, CAMPOS CFE MEJORADOS) -->
+        <!-- FORMULARIO PRINCIPAL (SOLO CAMBIO DE NOMBRES) -->
         <div class="form-section">
           <h2 style="margin-bottom: 20px; color: #2c3e50;">➕ Nueva Actividad</h2>
           
@@ -574,7 +574,6 @@ app.get('/tecnico', (req, res) => {
                 <label>📍 Ubicación:</label>
                 <input type="text" id="ubicacion" placeholder="Ej: Planta Baja, Azotea, Sótano..." required>
               </div>
-              <!-- QUITADO: CAMPO HORA -->
             </div>
             
             <div style="margin-bottom: 20px;">
@@ -589,6 +588,7 @@ app.get('/tecnico', (req, res) => {
                   <option value="lectura">📖 Lectura de Medidores</option>
                   <option value="electricidad">⚡ Electricidad CFE</option>
                   <option value="agua">💧 Agua</option>
+                  <option value="paneles">☀️ Paneles Solares</option> <!-- MANTENIDO -->
                   <option value="mantenimiento">🔧 Mantenimiento</option>
                   <option value="limpieza">🧹 Limpieza</option>
                   <option value="otro">Otro</option>
@@ -603,6 +603,7 @@ app.get('/tecnico', (req, res) => {
                   <option value="Tanque Elevado">💧 Tanque Elevado</option>
                   <option value="Sistema Eléctrico Principal">⚡ Sistema Eléctrico</option>
                   <option value="Tablero General">⚡ Tablero General</option>
+                  <option value="Paneles Solares">☀️ Paneles Solares</option> <!-- MANTENIDO -->
                   <option value="Software de Tickets Estacionamiento">💰 Software Tickets</option>
                   <option value="Elevador Mitsubishi">🚪 Elevador</option>
                   <option value="Bomba Contra Incendio">🛡️ Bomba Incendio</option>
@@ -611,7 +612,7 @@ app.get('/tecnico', (req, res) => {
               </div>
             </div>
             
-            <!-- CAMPOS DE CONSUMO (MODIFICADOS) -->
+            <!-- CAMPOS DE CONSUMO (SOLO CAMBIO DE NOMBRES) -->
             <div class="consumo-row">
               <div>
                 <div class="consumo-label">💧 Agua consumida:</div>
@@ -620,15 +621,15 @@ app.get('/tecnico', (req, res) => {
               </div>
               
               <div>
-                <div class="consumo-label">🔌 Energy Consumed (+):</div>
-                <input type="number" id="energia_consumida" step="0.01" class="consumo-input" placeholder="kWh">
+                <div class="consumo-label">🔌 Energy Consumed (+):</div> <!-- CAMBIADO -->
+                <input type="number" id="energia_consumida" step="0.1" class="consumo-input" placeholder="kWh">
                 <small style="color: #666;">Consumo CFE</small>
               </div>
               
               <div>
-                <div class="consumo-label">↩️ Energy Returned (-):</div>
-                <input type="number" id="energia_devuelta" step="0.01" class="consumo-input" placeholder="kWh">
-                <small style="color: #666;">Devolución CFE</small>
+                <div class="consumo-label">↩️ Energy Returned (-):</div> <!-- CAMBIADO -->
+                <input type="number" id="paneles_kwh" step="0.1" class="consumo-input" placeholder="kWh">
+                <small style="color: #666;">Paneles solares</small>
               </div>
             </div>
             
@@ -704,7 +705,7 @@ app.get('/tecnico', (req, res) => {
               <textarea id="editar_actividad" rows="3" required></textarea>
             </div>
             
-            <!-- CONSUMO ROW MODAL -->
+            <!-- CONSUMO ROW MODAL (CON NUEVOS NOMBRES) -->
             <div class="consumo-row">
               <div>
                 <div class="consumo-label">💧 Agua (m³):</div>
@@ -713,12 +714,12 @@ app.get('/tecnico', (req, res) => {
               
               <div>
                 <div class="consumo-label">🔌 Energy Consumed (+):</div>
-                <input type="number" id="editar_consumo" step="0.01" class="consumo-input">
+                <input type="number" id="editar_consumo" step="0.1" class="consumo-input">
               </div>
               
               <div>
                 <div class="consumo-label">↩️ Energy Returned (-):</div>
-                <input type="number" id="editar_devuelto" step="0.01" class="consumo-input">
+                <input type="number" id="editar_paneles" step="0.1" class="consumo-input">
               </div>
             </div>
             
@@ -753,7 +754,7 @@ app.get('/tecnico', (req, res) => {
         // Cargar actividades al iniciar
         cargarActividades();
         
-        // FORMULARIO NUEVO (SIN HORA)
+        // FORMULARIO NUEVO
         document.getElementById('formActividad').addEventListener('submit', async (e) => {
           e.preventDefault();
           
@@ -765,7 +766,7 @@ app.get('/tecnico', (req, res) => {
             nuevo_estado: document.getElementById('nuevo_estado').value,
             agua_m3: document.getElementById('agua_m3').value || null,
             energia_consumida: document.getElementById('energia_consumida').value || null,
-            energia_devuelta: document.getElementById('energia_devuelta').value || null,
+            paneles_kwh: document.getElementById('paneles_kwh').value || null,
             observaciones: document.getElementById('observaciones').value
           };
           
@@ -812,7 +813,7 @@ app.get('/tecnico', (req, res) => {
             document.getElementById('editar_actividad').value = actividad.actividad;
             document.getElementById('editar_agua').value = actividad.agua_m3 || '';
             document.getElementById('editar_consumo').value = actividad.energia_consumida || '';
-            document.getElementById('editar_devuelto').value = actividad.energia_devuelta || '';
+            document.getElementById('editar_paneles').value = actividad.paneles_kwh || '';
             document.getElementById('editar_observaciones').value = actividad.observaciones || '';
             
           } catch (error) {
@@ -831,7 +832,7 @@ app.get('/tecnico', (req, res) => {
             tipo_actividad: 'editado',
             agua_m3: document.getElementById('editar_agua').value || null,
             energia_consumida: document.getElementById('editar_consumo').value || null,
-            energia_devuelta: document.getElementById('editar_devuelto').value || null,
+            paneles_kwh: document.getElementById('editar_paneles').value || null,
             observaciones: document.getElementById('editar_observaciones').value
           };
           
@@ -894,13 +895,13 @@ app.get('/tecnico', (req, res) => {
             }
             
             // Calcular totales
-            let totalAgua = 0, totalConsumo = 0, totalDevuelto = 0;
+            let totalAgua = 0, totalConsumo = 0, totalPaneles = 0;
             
             lista.innerHTML = actividades.map(a => {
               // Sumar consumos
               if (a.agua_m3) totalAgua += parseFloat(a.agua_m3);
               if (a.energia_consumida) totalConsumo += parseFloat(a.energia_consumida);
-              if (a.energia_devuelta) totalDevuelto += parseFloat(a.energia_devuelta);
+              if (a.paneles_kwh) totalPaneles += parseFloat(a.paneles_kwh);
               
               // Obtener hora automática del timestamp
               const fechaCompleta = a.created_at ? new Date(a.created_at) : new Date();
@@ -911,16 +912,16 @@ app.get('/tecnico', (req, res) => {
               
               // Determinar clase CSS
               let clase = 'actividad-item';
-              if (a.agua_m3 || a.energia_consumida || a.energia_devuelta) {
+              if (a.agua_m3 || a.energia_consumida || a.paneles_kwh) {
                 clase += ' con-consumo';
               }
               if (a.nuevo_estado === 'rojo') clase += ' critico';
               
-              // Crear badges de consumo
+              // Crear badges de consumo (CON NUEVOS NOMBRES)
               let badges = '';
               if (a.agua_m3) badges += \`<span class="consumo-badge">💧 \${parseFloat(a.agua_m3).toFixed(3)} m³</span>\`;
-              if (a.energia_consumida) badges += \`<span class="consumo-badge">🔌 +\${parseFloat(a.energia_consumida).toFixed(2)} kWh</span>\`;
-              if (a.energia_devuelta) badges += \`<span class="consumo-badge">↩️ -\${parseFloat(a.energia_devuelta).toFixed(2)} kWh</span>\`;
+              if (a.energia_consumida) badges += \`<span class="consumo-badge">🔌 +\${parseFloat(a.energia_consumida).toFixed(1)} kWh</span>\`;
+              if (a.paneles_kwh) badges += \`<span class="consumo-badge">↩️ -\${parseFloat(a.paneles_kwh).toFixed(1)} kWh</span>\`;
               
               // Badge de estado
               let estadoBadge = '';
@@ -958,8 +959,8 @@ app.get('/tecnico', (req, res) => {
             // Mostrar resumen de consumos
             const resumenHTML = [];
             if (totalAgua > 0) resumenHTML.push(\`💧 \${totalAgua.toFixed(3)} m³\`);
-            if (totalConsumo > 0) resumenHTML.push(\`🔌 +\${totalConsumo.toFixed(2)} kWh\`);
-            if (totalDevuelto > 0) resumenHTML.push(\`↩️ -\${totalDevuelto.toFixed(2)} kWh\`);
+            if (totalConsumo > 0) resumenHTML.push(\`🔌 +\${totalConsumo.toFixed(1)} kWh\`);
+            if (totalPaneles > 0) resumenHTML.push(\`↩️ -\${totalPaneles.toFixed(1)} kWh\`);
             
             if (resumenHTML.length > 0) {
               document.getElementById('totalConsumos').innerHTML = resumenHTML.join(' • ');
@@ -985,7 +986,7 @@ app.get('/tecnico', (req, res) => {
   `);
 });
 
-// ==================== DASHBOARD GERENCIA (INTERFAZ ORIGINAL CON CAMBIOS) ====================
+// ==================== DASHBOARD GERENCIA (SOLO CAMBIO DE NOMBRES) ====================
 
 app.get('/gerencia', (req, res) => {
   const { fechaLegible } = getFechaHoy();
@@ -1126,7 +1127,7 @@ app.get('/gerencia', (req, res) => {
           </div>
         </div>
         
-        <!-- PANEL DE CONSUMOS (MODIFICADO) -->
+        <!-- PANEL DE CONSUMOS (SOLO CAMBIO DE NOMBRES) -->
         <h2 style="color: #2c3e50; margin-bottom: 15px;">📊 Consumos del Día</h2>
         <div class="consumo-dashboard">
           <div class="consumo-card">
@@ -1149,7 +1150,7 @@ app.get('/gerencia', (req, res) => {
           
           <div class="consumo-card">
             <div class="consumo-icon">↩️</div>
-            <div class="consumo-valor" id="totalDevuelto">0.0</div>
+            <div class="consumo-valor" id="totalPaneles">0.0</div>
             <div class="consumo-unidad">kilowatt-hora (kWh)</div>
             <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
               Energy Returned (-)
@@ -1166,7 +1167,7 @@ app.get('/gerencia', (req, res) => {
           </div>
         </div>
         
-        <!-- SEMÁFORO DE SISTEMAS (IGUAL) -->
+        <!-- SEMÁFORO DE SISTEMAS (CON PANELES SOLARES) -->
         <h2 style="color: #2c3e50; margin: 30px 0 15px 0;">🚦 Estado de Sistemas Críticos</h2>
         <div class="semaforo-grid" id="semaforoGrid">
           <p>Cargando sistemas...</p>
@@ -1199,16 +1200,16 @@ app.get('/gerencia', (req, res) => {
             const response = await fetch(API_URL + '/api/dashboard/gerencia');
             const data = await response.json();
             
-            // Actualizar consumos (CAMPOS MODIFICADOS)
+            // Actualizar consumos (CON NUEVOS NOMBRES)
             document.getElementById('totalAgua').textContent = data.consumos_dia.agua_m3.toFixed(3);
-            document.getElementById('totalConsumo').textContent = data.consumos_dia.energia_consumida.toFixed(2);
-            document.getElementById('totalDevuelto').textContent = data.consumos_dia.energia_devuelta.toFixed(2);
+            document.getElementById('totalConsumo').textContent = data.consumos_dia.energia_consumida.toFixed(1);
+            document.getElementById('totalPaneles').textContent = data.consumos_dia.paneles_kwh.toFixed(1);
             
             const balance = data.consumos_dia.energia_neta;
             const balanceElem = document.getElementById('balanceEnergia');
             const balanceTexto = document.getElementById('balanceTexto');
             
-            balanceElem.textContent = Math.abs(balance).toFixed(2);
+            balanceElem.textContent = Math.abs(balance).toFixed(1);
             if (balance > 0) {
               balanceElem.className = 'consumo-valor balance-positivo';
               balanceTexto.innerHTML = '<span style="color: #e74c3c;">CONSUMO NETO</span>';
@@ -1261,7 +1262,7 @@ app.get('/gerencia', (req, res) => {
                 let consumos = '';
                 if (a.agua_m3) consumos += \`💧 \${a.agua_m3} m³ \`;
                 if (a.energia_consumida) consumos += \`🔌 +\${a.energia_consumida} kWh \`;
-                if (a.energia_devuelta) consumos += \`↩️ -\${a.energia_devuelta} kWh \`;
+                if (a.paneles_kwh) consumos += \`↩️ -\${a.paneles_kwh} kWh \`;
                 
                 let estadoBadge = '';
                 if (a.nuevo_estado === 'verde') {
@@ -1313,7 +1314,7 @@ app.get('/gerencia', (req, res) => {
   `);
 });
 
-// ==================== PÁGINA PRINCIPAL (MODIFICADA) ====================
+// ==================== PÁGINA PRINCIPAL (ACTUALIZADA) ====================
 app.get('/', (req, res) => {
   const { fechaLegible } = getFechaHoy();
   
@@ -1405,11 +1406,11 @@ app.get('/', (req, res) => {
         <div class="fecha">${fechaLegible}</div>
         
         <div class="rule">
-          <strong>📋 Sistema mejorado (basado en tu interfaz favorita):</strong><br>
+          <strong>📋 Sistema mejorado:</strong><br>
           1. ✏️ Editar/🗑️ eliminar actividades<br>
           2. ⏰ Hora automática (sin entrada manual)<br>
-          3. 💧 Agua + ⚡ CFE (Consumed/Returned)<br>
-          4. 📊 Dashboard con semáforo de sistemas
+          3. 💧 Agua + 🔌 CFE (Consumed/Returned)<br>
+          4. ☀️ Paneles solares incluidos
         </div>
         
         <a href="/tecnico" class="card tecnico">
@@ -1418,7 +1419,7 @@ app.get('/', (req, res) => {
           <ul>
             <li>✏️ Editar y 🗑️ eliminar actividades</li>
             <li>💧 Agua + 🔌 CFE (Consumed/Returned)</li>
-            <li>🚦 Cambiar estado de sistemas</li>
+            <li>☀️ Paneles solares incluidos</li>
             <li>📥 Exportar a Excel</li>
           </ul>
         </a>
@@ -1427,9 +1428,9 @@ app.get('/', (req, res) => {
           <h2>👔 Dashboard Gerencia</h2>
           <p>Monitoreo en tiempo real (solo lectura)</p>
           <ul>
-            <li>💧 Agua + ⚡ CFE (Consumed/Returned)</li>
+            <li>💧 Agua + 🔌 CFE (Consumed/Returned)</li>
+            <li>☀️ Paneles solares incluidos</li>
             <li>🚦 Semáforo de sistemas</li>
-            <li>📝 Ver actividades</li>
             <li>📥 Exportar reportes</li>
           </ul>
         </a>
@@ -1438,9 +1439,9 @@ app.get('/', (req, res) => {
           <strong>💡 Cambios realizados:</strong>
           <ol>
             <li><strong>Quitado:</strong> Campo de hora manual</li>
-            <li><strong>Quitado:</strong> Paneles solares</li>
-            <li><strong>Agregado:</strong> Campos CFE (Consumed/Returned)</li>
-            <li><strong>Agregado:</strong> Botones editar/eliminar</li>
+            <li><strong>Cambiado:</strong> "CFE consumida" → <strong>"Energy Consumed (+)"</strong></li>
+            <li><strong>Cambiado:</strong> "Paneles generados" → <strong>"Energy Returned (-)"</strong></li>
+            <li><strong>Mantenido:</strong> Paneles solares ☀️</li>
             <li><strong>Mantenido:</strong> Tu interfaz favorita ✨</li>
           </ol>
         </div>
@@ -1457,6 +1458,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Principal: http://localhost:${PORT}`);
   console.log(`👷 Técnico (EDITAR/BORRAR): http://localhost:${PORT}/tecnico`);
   console.log(`👔 Gerencia (SOLO LECTURA): http://localhost:${PORT}/gerencia`);
-  console.log(`📊 Métricas: 💧 Agua + 🔌 CFE (Consumed/Returned)`);
+  console.log(`📊 Métricas: 💧 Agua + 🔌 CFE (Consumed/Returned) + ☀️ Paneles`);
   console.log(`=========================================\n`);
 });
